@@ -24,7 +24,11 @@ program
   })
   .action(async (goal, options) => {
     if (!process.env.CEREBRAS_API_KEY) {
-      console.error(chalk.red('Error: CEREBRAS_API_KEY is not set in .env file.'));
+      console.error(
+        chalk.red(
+          'Error: CEREBRAS_API_KEY is not set. Please create a .env file based on .env.example'
+        )
+      );
       process.exit(1);
     }
 

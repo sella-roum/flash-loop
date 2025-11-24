@@ -1,0 +1,6 @@
+node_modules
+dist
+generated.spec.ts
+test-results
+playwright-report
+.env

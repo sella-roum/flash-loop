@@ -1,22 +1,22 @@
-import { Page, Frame } from 'playwright';
-
 /**
- * ページの状態を観測し、Virtual IDを注入してLLM用のテキスト表現を生成するクラス
+ * src/core/observer.ts
+ * ページの状態を観測し、Shadow DOMを含む全要素にVirtual IDを注入するクラス
  */
+import { Page, Frame } from 'playwright';
+import { ATTR_FLASH_ID } from '../constants';
+
 export class Observer {
   /**
    * 現在のページ状態をキャプチャし、整形された文字列を返します。
-   * 全フレームを走査し、操作可能な要素にIDを付与します。
+   * 全フレームおよびShadow DOMを走査し、操作可能な要素にIDを付与します。
    * @param page Playwright Page object
    */
   async captureState(page: Page): Promise<string> {
     // 1. Smart Wait: DOMとネットワークの安定化を待機
     try {
       await page.waitForLoadState('domcontentloaded', { timeout: 2000 });
-      // ネットワークアイドルは厳しすぎる場合があるので、必要に応じて有効化
-      // await page.waitForLoadState('networkidle', { timeout: 2000 });
     } catch {
-      // タイムアウトしても処理を続行する（SPAなどでロードが終わらない場合があるため）
+      // タイムアウトしても処理を続行する
     }
 
     // 2. 全フレームに対してID注入と要素抽出を実行
@@ -29,8 +29,7 @@ export class Observer {
         const frameElements = await this.injectAndScan(frame);
         allElementsInfo.push(...frameElements);
       } catch {
-        // Cross-origin iframeなどでアクセス不可の場合はスキップし、ログだけ残す
-        // console.warn(`Skipped frame: ${frame.url()}`);
+        // Cross-origin iframeなどでアクセス不可の場合はスキップ
       }
     }
 
@@ -48,24 +47,62 @@ ${allElementsInfo.length > 0 ? allElementsInfo.join('\n') : 'No interactive elem
   }
 
   /**
-   * 特定のフレーム内でJSを実行し、要素にIDを振り、情報を収集します。
+   * 注入したIDを全フレームから削除し、DOMをクリーンな状態に戻します。
+   * @param page Playwright Page object
+   */
+  async cleanup(page: Page): Promise<void> {
+    const frames = page.frames();
+    for (const frame of frames) {
+      try {
+        await frame.evaluate((attr) => {
+          const elements = document.querySelectorAll(`[${attr}]`);
+          elements.forEach((el) => el.removeAttribute(attr));
+        }, ATTR_FLASH_ID);
+      } catch {
+        // 無視
+      }
+    }
+  }
+
+  /**
+   * 特定のフレーム内でJSを実行し、Shadow DOMを含む要素にIDを振り、情報を収集します。
    */
   private async injectAndScan(frame: Frame): Promise<string[]> {
-    return await frame.evaluate(() => {
+    return await frame.evaluate((attr) => {
+      /**
+       * Shadow DOMを貫通して要素を収集するヘルパー関数
+       */
+      function queryAllDeep(selector: string, root: Document | ShadowRoot = document): Element[] {
+        const elements: Element[] = [];
+
+        // 1. カレントroot内の対象要素を取得
+        elements.push(...Array.from(root.querySelectorAll(selector)));
+
+        // 2. 子要素内のShadowRootを再帰的に探索
+        const allElements = root.querySelectorAll('*');
+        allElements.forEach((el) => {
+          if (el.shadowRoot) {
+            elements.push(...queryAllDeep(selector, el.shadowRoot));
+          }
+        });
+
+        return elements;
+      }
+
       // 操作可能な要素のセレクタリスト
       const selector = 'button, a, input, select, textarea, [role="button"], [onclick]';
-      const elements = document.querySelectorAll(selector);
+      const elements = queryAllDeep(selector);
       const results: string[] = [];
 
       elements.forEach((el) => {
         // まだIDがない場合のみ新規付与 (既存IDは維持して安定性を保つ)
-        if (!el.getAttribute('data-flash-id')) {
+        if (!el.getAttribute(attr)) {
           // 簡易的なユニークID生成 (ランダム文字列)
           const newId = Math.random().toString(36).substring(2, 6);
-          el.setAttribute('data-flash-id', newId);
+          el.setAttribute(attr, newId);
         }
 
-        const id = el.getAttribute('data-flash-id');
+        const id = el.getAttribute(attr);
         const tagName = el.tagName.toLowerCase();
 
         // テキスト情報の取得と整形
@@ -94,6 +131,6 @@ ${allElementsInfo.length > 0 ? allElementsInfo.join('\n') : 'No interactive elem
       });
 
       return results;
-    });
+    }, ATTR_FLASH_ID);
   }
 }

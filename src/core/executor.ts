@@ -1,13 +1,14 @@
-import { Page, Frame, ElementHandle } from 'playwright';
-import { ActionPlan, ExecutionResult } from '../types';
-
 /**
+ * src/core/executor.ts
  * アクションを実行し、再現可能なPlaywrightコードを生成するクラス
  */
+import { Page, Frame, ElementHandle } from 'playwright';
+import { ActionPlan, ExecutionResult } from '../types';
+import { ATTR_FLASH_ID } from '../constants';
+
 export class Executor {
   /**
    * ActionPlanに基づいて操作を実行します。
-   * Virtual IDで操作し、事後的にベストなセレクタを逆算・検証します。
    */
   async execute(plan: ActionPlan, page: Page): Promise<ExecutionResult> {
     try {
@@ -30,8 +31,7 @@ export class Executor {
         return { success: true, generatedCode, retryable: true };
       }
 
-      // --- Interaction Actions (click, fill, assertion) ---
-      // 1. ターゲット要素を全フレームから特定
+      // --- Interaction Actions ---
       if (!plan.targetId) throw new Error('Target ID is required for interaction');
 
       const { elementHandle, frame } = await this.findTargetInFrames(page, plan.targetId);
@@ -42,7 +42,7 @@ export class Executor {
         );
       }
 
-      // 2. セレクタの逆算と一意性検証 (Reverse Engineering)
+      // 2. セレクタの逆算と一意性検証
       const bestSelector = await this.calculateUniqueSelector(frame, elementHandle, plan.targetId);
 
       // フレーム情報を考慮したコード構築
@@ -60,9 +60,8 @@ export class Executor {
         if (name) frameSelector = `iframe[name=${JSON.stringify(name)}]`;
         else if (id) frameSelector = `iframe[id=${JSON.stringify(id)}]`;
         else if (src) frameSelector = `iframe[src=${JSON.stringify(src)}]`;
-        else frameSelector = `iframe[src=${JSON.stringify(frame.url())}]`; // 最終手段
+        else frameSelector = `iframe[src=${JSON.stringify(frame.url())}]`;
 
-        // JSON.stringifyでエスケープ済みのセレクタ文字列を埋め込む
         baseLocatorCode = `page.frameLocator(${JSON.stringify(frameSelector)}).${bestSelector}`;
       }
 
@@ -75,17 +74,12 @@ export class Executor {
         await elementHandle.fill(val);
         generatedCode = `await ${baseLocatorCode}.fill(${JSON.stringify(val)});`;
       } else if (plan.actionType === 'assertion') {
-        // アサーション: 要素が表示されていることを確認
-        // ランタイムではPlaywright Testのexpectを使わず、条件分岐で判定する
         const isVisible = await elementHandle.isVisible();
         if (!isVisible) {
           throw new Error('Assertion Failed: Element is not visible.');
         }
-
-        // 生成コードはLocatorベースにする
         generatedCode = `await expect(${baseLocatorCode}).toBeVisible();`;
       } else {
-        // 未知のアクションタイプへの防御
         throw new Error(`Unsupported actionType: ${plan.actionType}`);
       }
 
@@ -107,7 +101,8 @@ export class Executor {
 
     for (const frame of frames) {
       try {
-        const handle = await frame.$(`[data-flash-id="${id}"]`);
+        // 定数を使用
+        const handle = await frame.$(`[${ATTR_FLASH_ID}="${id}"]`);
         if (handle) {
           return { elementHandle: handle, frame };
         }
@@ -119,15 +114,13 @@ export class Executor {
   }
 
   /**
-   * 要素のハンドルから、永続的に使用可能なベストなセレクタを逆算し、
-   * そのセレクタがページ内で一意(Unique)であることを検証する
+   * 要素のハンドルから、永続的に使用可能なベストなセレクタを逆算する
    */
   private async calculateUniqueSelector(
     frame: Frame,
     handle: ElementHandle,
     virtualId: string
   ): Promise<string> {
-    // 1. 候補となるセレクタのパーツをブラウザ内で取得
     const attributes = await frame.evaluate((el) => {
       const htmlEl = el as HTMLElement;
       return {
@@ -135,23 +128,18 @@ export class Executor {
         role: htmlEl.getAttribute('role'),
         tagName: htmlEl.tagName.toLowerCase(),
         placeholder: htmlEl.getAttribute('placeholder'),
-        text: htmlEl.innerText?.trim().slice(0, 30), // 長すぎるテキストは避ける
+        text: htmlEl.innerText?.trim().slice(0, 30),
         ariaLabel: htmlEl.getAttribute('aria-label'),
-        type: htmlEl.getAttribute('type'),
       };
     }, handle);
 
-    // 2. 候補リストの作成 (優先度順)
     const candidates: string[] = [];
-    // 生成コードが壊れないよう値をエスケープする
     const s = (val: string) => JSON.stringify(val);
 
-    // A. data-testid (最強)
     if (attributes.testid) {
       candidates.push(`getByTestId(${s(attributes.testid)})`);
     }
 
-    // B. Role + Name (Playwright推奨)
     const name = attributes.ariaLabel || attributes.text;
     const role =
       attributes.role ||
@@ -163,40 +151,39 @@ export class Executor {
       candidates.push(`getByRole(${s(role)}, { name: ${s(name)} })`);
     }
 
-    // C. Placeholder (Input系)
     if (attributes.placeholder) {
       candidates.push(`getByPlaceholder(${s(attributes.placeholder)})`);
     }
 
-    // D. Text content
     if (attributes.text) {
       candidates.push(`getByText(${s(attributes.text)})`);
     }
 
-    // 3. 一意性の検証 (Uniqueness Check)
     for (const selector of candidates) {
       try {
         let count = 0;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const anyFrame = frame as any;
+
         if (selector.startsWith('getByTestId')) {
-          count = await frame.getByTestId(attributes.testid!).count();
+          count = await anyFrame.getByTestId(attributes.testid!).count();
         } else if (selector.startsWith('getByRole')) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if (role && name) count = await frame.getByRole(role as any, { name }).count();
+          if (role && name) count = await anyFrame.getByRole(role, { name }).count();
         } else if (selector.startsWith('getByPlaceholder')) {
-          count = await frame.getByPlaceholder(attributes.placeholder!).count();
+          count = await anyFrame.getByPlaceholder(attributes.placeholder!).count();
         } else if (selector.startsWith('getByText')) {
-          count = await frame.getByText(attributes.text!).count();
+          count = await anyFrame.getByText(attributes.text!).count();
         }
 
         if (count === 1) {
-          return selector; // 一意なセレクタが見つかった！
+          return selector;
         }
       } catch {
-        // セレクタが無効等の場合は次へ
+        // ignore
       }
     }
 
-    // 4. フォールバック
-    return `locator('[data-flash-id="${virtualId}"]').first() /* CHECK: Unique selector not found */`;
+    // 定数を使用
+    return `locator('[${ATTR_FLASH_ID}="${virtualId}"]').first() /* CHECK: Unique selector not found */`;
   }
 }

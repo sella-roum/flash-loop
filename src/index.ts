@@ -1,5 +1,10 @@
+/**
+ * src/index.ts
+ * CLIアプリケーションのエントリーポイント
+ */
 import { Command, InvalidArgumentError } from 'commander';
 import { FlashLoop } from './core/loop';
+import { SpinnerLogger } from './tools/logger';
 import * as dotenv from 'dotenv';
 import chalk from 'chalk';
 
@@ -32,6 +37,8 @@ program
       process.exit(1);
     }
 
+    // CLI実行用のロガーを作成
+    const logger = new SpinnerLogger();
     console.log(chalk.cyan('⚡ Starting Flash-Loop...'));
 
     try {
@@ -39,6 +46,7 @@ program
         startUrl: options.url,
         headless: options.headless,
         maxSteps: options.maxSteps,
+        logger: logger, // 明示的にCLI用ロガーを渡す
       });
 
       await agent.start(goal);

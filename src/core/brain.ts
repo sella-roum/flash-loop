@@ -7,7 +7,7 @@ import { ActionSchema, ActionPlan } from '../types';
  */
 export class Brain {
   // Cerebras Llama 3.1 70B モデルを使用 (高速推論)
-  private model = cerebras('llama3.1-70b');
+  private model = cerebras(process.env.LLM_MODEL_NAME || 'llama3.1-70b');
 
   /**
    * 現在の状態と履歴から、次のアクションを推論します。

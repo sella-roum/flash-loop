@@ -9,6 +9,7 @@ import { logger } from '../tools/logger';
 export interface FlashLoopOptions {
   startUrl?: string;
   headless?: boolean;
+  maxSteps?: number;
 }
 
 export class FlashLoop {
@@ -51,7 +52,7 @@ export class FlashLoop {
     logger.stop('Ready to start loop.');
 
     let stepCount = 0;
-    const MAX_STEPS = 20;
+    const MAX_STEPS = this.options.maxSteps ?? 20;
 
     while (stepCount < MAX_STEPS) {
       stepCount++;

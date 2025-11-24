@@ -1,23 +1,23 @@
 # ⚡ Flash-Loop
 
-**AI駆動の自律型ブラウザエージェント & Playwright コードジェネレーター**
+## AI駆動の自律型ブラウザエージェント & Playwright コードジェネレーター
 
 Flash-Loop は、Cerebras (Llama 3.1 70B) の圧倒的な推論速度を活用し、自然言語のゴールから Web ブラウザ操作を自動化するエージェントです。
 操作を実行するだけでなく、**再現性が高くメンテナンスしやすい Playwright のテストコード (`.spec.ts`) を自動生成**します。
 
 ## ✨ 特徴
 
-*   **🏎️ 爆速 AI 推論**: Cerebras Inference API を採用し、思考ステップのレイテンシを極小化。リアルタイムに近い操作感を実現。
-*   **🛡️ 堅牢な自動操作**: 独自の「Virtual ID」注入システムにより、AI が CSS セレクタを推測して失敗するリスクを排除。
-*   **📝 テストコード自動生成**: 操作成功後、その要素を一意に特定するベストなセレクタ（`getByRole` や `getByTestId` 等）を動的に逆算し、テストコードとして保存します。
-*   **🔒 セキュリティ配慮**: 入力フォームの値を監視し、パスワードや機密情報は AI に送信する前に自動でマスク処理を行います。
+- **🏎️ 爆速 AI 推論**: Cerebras Inference API を採用し、思考ステップのレイテンシを極小化。リアルタイムに近い操作感を実現。
+- **🛡️ 堅牢な自動操作**: 独自の「Virtual ID」注入システムにより、AI が CSS セレクタを推測して失敗するリスクを排除。
+- **📝 テストコード自動生成**: 操作成功後、その要素を一意に特定するベストなセレクタ（`getByRole` や `getByTestId` 等）を動的に逆算し、テストコードとして保存します。
+- **🔒 セキュリティ配慮**: 入力フォームの値を監視し、パスワードや機密情報は AI に送信する前に自動でマスク処理を行います。
 
 ## 🚀 セットアップ
 
 ### 前提条件
 
-*   Node.js (v18 以上推奨)
-*   [Cerebras API Key](https://inference.cerebras.ai/)
+- Node.js (v18 以上推奨)
+- [Cerebras API Key](https://inference.cerebras.ai/)
 
 ### インストール
 
@@ -35,7 +35,8 @@ npm install
 cp .env.example .env
 ```
 
-**.env**
+### .env
+
 ```env
 CEREBRAS_API_KEY=your_cerebras_api_key_here
 ```
@@ -50,7 +51,7 @@ npm run dev -- "<達成したいゴール>" -u "<開始URL>"
 
 ### 実行例
 
-**例: Google で Playwright を検索する**
+#### 例: Google で Playwright を検索する
 
 ```bash
 npm run dev -- "Search for Playwright and verify the result" -u "https://google.com"
@@ -58,29 +59,29 @@ npm run dev -- "Search for Playwright and verify the result" -u "https://google.
 
 ### オプション
 
-| オプション | エイリアス | 説明 | デフォルト |
-| :--- | :--- | :--- | :--- |
-| `--url` | `-u` | 開始する URL | なし (必須ではないが推奨) |
-| `--headless` | | ブラウザをヘッドレスモードで実行 | `false` (ブラウザを表示) |
+| オプション   | エイリアス | 説明                             | デフォルト                |
+| :----------- | :--------- | :------------------------------- | :------------------------ |
+| `--url`      | `-u`       | 開始する URL                     | なし (必須ではないが推奨) |
+| `--headless` |            | ブラウザをヘッドレスモードで実行 | `false` (ブラウザを表示)  |
 
 ## 🏗️ アーキテクチャ
 
 Flash-Loop は **"Observe-Think-Act"** ループに基づいて動作します。
 
 1.  **👁️ Observe (観測)**
-    *   ページ上の操作可能な要素（ボタン、リンク、入力欄）をスキャンし、一時的な `Virtual ID` (例: `[ID: abc1]`) を付与します。
-    *   DOM 全体ではなく、重要な要素のみを抽出した軽量なテキスト表現を生成します。
-    *   *Security:* `type="password"` などの機密フィールドはマスクされ、AI には送信されません。
+    - ページ上の操作可能な要素（ボタン、リンク、入力欄）をスキャンし、一時的な `Virtual ID` (例: `[ID: abc1]`) を付与します。
+    - DOM 全体ではなく、重要な要素のみを抽出した軽量なテキスト表現を生成します。
+    - _Security:_ `type="password"` などの機密フィールドはマスクされ、AI には送信されません。
 
 2.  **🧠 Think (思考)**
-    *   Llama 3.1 70B が現在の状態とゴールを分析し、次のアクション（`click`, `fill`, `navigate` 等）を決定します。
-    *   操作対象は曖昧なセレクタではなく、確実に特定できる `Virtual ID` で指定されます。
+    - Llama 3.1 70B が現在の状態とゴールを分析し、次のアクション（`click`, `fill`, `navigate` 等）を決定します。
+    - 操作対象は曖昧なセレクタではなく、確実に特定できる `Virtual ID` で指定されます。
 
 3.  **⚡ Execute & Generate (実行と逆算)**
-    *   **実行:** 指定された ID の要素を Playwright で操作します。
-    *   **逆算 (Reverse Engineering):** 操作が成功した後、その要素を特定するための「人間が読める、かつ壊れにくいセレクタ」を計算します。
-        *   優先度: `data-testid` > `Role + Name` > `Placeholder` > `Text`
-    *   **生成:** 計算されたセレクタを使って、`generated_test_xxxx.spec.ts` にコードを追記します。
+    - **実行:** 指定された ID の要素を Playwright で操作します。
+    - **逆算 (Reverse Engineering):** 操作が成功した後、その要素を特定するための「人間が読める、かつ壊れにくいセレクタ」を計算します。
+      - 優先度: `data-testid` > `Role + Name` > `Placeholder` > `Text`
+    - **生成:** 計算されたセレクタを使って、`generated_test_xxxx.spec.ts` にコードを追記します。
 
 ## 🛠️ 開発コマンド
 
@@ -114,7 +115,7 @@ import { test, expect } from '@playwright/test';
  */
 test('FlashLoop Auto-Generated Test', async ({ page }) => {
   test.setTimeout(60000);
-  
+
   await page.goto('https://google.com/');
   await page.getByRole('combobox', { name: '検索' }).fill('Playwright');
   await page.getByRole('button', { name: 'Google 検索' }).click();

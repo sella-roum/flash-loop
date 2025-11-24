@@ -15,6 +15,7 @@ program
   .argument('<goal>', 'The goal for the agent to achieve')
   .option('-u, --url <url>', 'Starting URL')
   .option('--headless', 'Run in headless mode', false)
+  .option('--max-steps <number>', 'Maximum number of steps', (val) => parseInt(val, 10))
   .action(async (goal, options) => {
     if (!process.env.CEREBRAS_API_KEY) {
       console.error(chalk.red('Error: CEREBRAS_API_KEY is not set in .env file.'));
@@ -27,6 +28,7 @@ program
       const agent = new FlashLoop({
         startUrl: options.url,
         headless: options.headless,
+        maxSteps: options.maxSteps,
       });
 
       await agent.start(goal);

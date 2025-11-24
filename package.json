@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
+    "check": "prettier --write . && eslint . --fix && rimraf dist && tsc",
     "test": "playwright test",
     "prepare": "npm run build"
   },

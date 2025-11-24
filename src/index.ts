@@ -10,7 +10,7 @@ const program = new Command();
 
 program
   .name('flash-loop')
-  .description('AI-powered autonomous browser agent (Flash-Loop v2)')
+  .description('AI-powered autonomous browser agent (Flash-Loop)')
   .version('2.0.0')
   .argument('<goal>', 'The goal for the agent to achieve')
   .option('-u, --url <url>', 'Starting URL')
@@ -21,14 +21,14 @@ program
       process.exit(1);
     }
 
-    console.log(chalk.cyan('⚡ Starting Flash-Loop v2...'));
-
-    const agent = new FlashLoop({
-      startUrl: options.url,
-      headless: options.headless,
-    });
+    console.log(chalk.cyan('⚡ Starting Flash-Loop...'));
 
     try {
+      const agent = new FlashLoop({
+        startUrl: options.url,
+        headless: options.headless,
+      });
+
       await agent.start(goal);
     } catch (error) {
       console.error(chalk.red('Unexpected Error:'), error);

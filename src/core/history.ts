@@ -15,6 +15,7 @@ export class HistoryManager {
   }
 
   getHistory(): string[] {
-    return this.logs;
+    // 内部配列のコピーを返して破壊を防ぐ
+    return [...this.logs];
   }
 }

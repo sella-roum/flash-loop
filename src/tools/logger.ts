@@ -1,8 +1,11 @@
 import ora from 'ora';
 import chalk from 'chalk';
 
+// モジュールスコープでインスタンス化して this 依存を排除
+const spinner = ora();
+
 export const logger = {
-  spinner: ora(),
+  spinner,
 
   info(msg: string) {
     console.log(chalk.blue(`ℹ ${msg}`));
@@ -13,7 +16,7 @@ export const logger = {
   },
 
   error(msg: string) {
-    console.log(chalk.red(`✖ ${msg}`));
+    console.error(chalk.red(`✖ ${msg}`));
   },
 
   action(type: string, target: string) {
@@ -25,15 +28,15 @@ export const logger = {
   },
 
   start(msg: string) {
-    this.spinner.start(msg);
+    spinner.start(msg);
   },
 
   stop(msg?: string) {
-    if (msg) this.spinner.succeed(msg);
-    else this.spinner.stop();
+    if (msg) spinner.succeed(msg);
+    else spinner.stop();
   },
 
   fail(msg: string) {
-    this.spinner.fail(msg);
+    spinner.fail(msg);
   },
 };

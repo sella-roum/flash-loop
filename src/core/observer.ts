@@ -68,8 +68,17 @@ ${allElementsInfo.length > 0 ? allElementsInfo.join('\n') : 'No interactive elem
         const id = el.getAttribute('data-flash-id');
         const tagName = el.tagName.toLowerCase();
 
-        // テキスト情報の取得と整形 (改行削除、文字数制限)
+        // テキスト情報の取得と整形
         let text = (el as HTMLElement).innerText || (el as HTMLInputElement).value || '';
+
+        // セキュリティ対策: 機密情報のマスク処理
+        if (tagName === 'input') {
+          const type = el.getAttribute('type')?.toLowerCase();
+          if (type && ['password', 'email', 'tel', 'credit-card'].includes(type)) {
+            text = '[REDACTED]';
+          }
+        }
+
         text = text.replace(/\s+/g, ' ').trim().substring(0, 50);
 
         // input要素の場合はplaceholderも情報として含める

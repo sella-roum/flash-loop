@@ -1,6 +1,4 @@
-/* eslint-disable playwright/no-element-handle */
 import { Page, Frame, ElementHandle } from 'playwright';
-import { expect } from '@playwright/test';
 import { ActionPlan, ExecutionResult } from '../types';
 
 /**
@@ -45,19 +43,31 @@ export class Executor {
       }
 
       // 2. セレクタの逆算と一意性検証 (Reverse Engineering)
-      // 操作前に、この要素を一意に特定できるPlaywrightセレクタを計算する
       const bestSelector = await this.calculateUniqueSelector(frame, elementHandle, plan.targetId);
 
-      // フレーム情報を考慮したコードプレフィックス
-      // メインフレーム以外なら frameLocator を使うコードにする
+      // フレーム情報を考慮したコード構築
+      let baseLocatorCode = `page.${bestSelector}`;
       const isMainFrame = frame === page.mainFrame();
-      const baseLocatorCode = isMainFrame
-        ? `page.${bestSelector}`
-        : `page.frameLocator('${frame.url()}').${bestSelector}`;
+
+      if (!isMainFrame) {
+        // フレームを特定するためのセレクタを生成
+        const frameElement = await frame.frameElement();
+        const name = await frameElement.getAttribute('name');
+        const id = await frameElement.getAttribute('id');
+        const src = await frameElement.getAttribute('src');
+
+        let frameSelector = '';
+        if (name) frameSelector = `iframe[name=${JSON.stringify(name)}]`;
+        else if (id) frameSelector = `iframe[id=${JSON.stringify(id)}]`;
+        else if (src) frameSelector = `iframe[src=${JSON.stringify(src)}]`;
+        else frameSelector = `iframe[src=${JSON.stringify(frame.url())}]`; // 最終手段
+
+        // JSON.stringifyでエスケープ済みのセレクタ文字列を埋め込む
+        baseLocatorCode = `page.frameLocator(${JSON.stringify(frameSelector)}).${bestSelector}`;
+      }
 
       // 3. アクション実行 & コード生成
       if (plan.actionType === 'click') {
-        // 実際の操作はElementHandle経由で行う (ID指定なので確実)
         await elementHandle.click();
         generatedCode = `await ${baseLocatorCode}.click();`;
       } else if (plan.actionType === 'fill') {
@@ -66,13 +76,17 @@ export class Executor {
         generatedCode = `await ${baseLocatorCode}.fill(${JSON.stringify(val)});`;
       } else if (plan.actionType === 'assertion') {
         // アサーション: 要素が表示されていることを確認
-        // ElementHandleではtoBeVisible()が型定義にないため、isVisible()を使用する
-        // ESLintがtoBeVisibleを推奨するため、この行だけ無効化する
-        // eslint-disable-next-line playwright/prefer-web-first-assertions
-        expect(await elementHandle.isVisible()).toBe(true);
+        // ランタイムではPlaywright Testのexpectを使わず、条件分岐で判定する
+        const isVisible = await elementHandle.isVisible();
+        if (!isVisible) {
+          throw new Error('Assertion Failed: Element is not visible.');
+        }
 
         // 生成コードはLocatorベースにする
         generatedCode = `await expect(${baseLocatorCode}).toBeVisible();`;
+      } else {
+        // 未知のアクションタイプへの防御
+        throw new Error(`Unsupported actionType: ${plan.actionType}`);
       }
 
       return { success: true, generatedCode, retryable: false };
@@ -129,10 +143,12 @@ export class Executor {
 
     // 2. 候補リストの作成 (優先度順)
     const candidates: string[] = [];
+    // 生成コードが壊れないよう値をエスケープする
+    const s = (val: string) => JSON.stringify(val);
 
     // A. data-testid (最強)
     if (attributes.testid) {
-      candidates.push(`getByTestId('${attributes.testid}')`);
+      candidates.push(`getByTestId(${s(attributes.testid)})`);
     }
 
     // B. Role + Name (Playwright推奨)
@@ -144,22 +160,20 @@ export class Executor {
         : null);
 
     if (role && name) {
-      // 特殊文字のエスケープなどは簡易化しています
-      candidates.push(`getByRole('${role}', { name: '${name}' })`);
+      candidates.push(`getByRole(${s(role)}, { name: ${s(name)} })`);
     }
 
     // C. Placeholder (Input系)
     if (attributes.placeholder) {
-      candidates.push(`getByPlaceholder('${attributes.placeholder}')`);
+      candidates.push(`getByPlaceholder(${s(attributes.placeholder)})`);
     }
 
     // D. Text content
     if (attributes.text) {
-      candidates.push(`getByText('${attributes.text}')`);
+      candidates.push(`getByText(${s(attributes.text)})`);
     }
 
     // 3. 一意性の検証 (Uniqueness Check)
-    // 作成した候補セレクタが、現在のフレーム内で「1つの要素のみ」にヒットするか確認
     for (const selector of candidates) {
       try {
         let count = 0;

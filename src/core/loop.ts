@@ -1,75 +1,109 @@
-import { chromium, Page, Browser } from 'playwright';
-import { Brain } from './llm';
+import { chromium, Browser, Page } from 'playwright';
+import { Brain } from './brain';
+import { Observer } from './observer';
+import { Executor } from './executor';
+import { HistoryManager } from './history';
 import { Generator } from '../tools/generator';
+import { logger } from '../tools/logger';
+
+export interface FlashLoopOptions {
+  startUrl?: string;
+  headless?: boolean;
+  maxSteps?: number;
+}
 
 export class FlashLoop {
   private browser: Browser | null = null;
-  private page: Page | null = null;
+  // 初期化を保証するため、! を使用 (start()で必ず初期化)
+  private page!: Page;
   private brain: Brain;
+  private observer: Observer;
+  private executor: Executor;
+  private history: HistoryManager;
   private generator: Generator;
-  private history: string[] = [];
+  private options: FlashLoopOptions;
 
-  constructor() {
+  constructor(options: FlashLoopOptions) {
     this.brain = new Brain();
+    this.observer = new Observer();
+    this.executor = new Executor();
+    this.history = new HistoryManager();
     this.generator = new Generator();
+    this.options = options;
   }
 
   async start(goal: string) {
-    console.log(`🚀 FlashLoop starting: "${goal}"`);
+    logger.start(`🚀 Starting FlashLoop: "${goal}"`);
 
-    this.browser = await chromium.launch({ headless: false }); // デバッグ用にヘッドあり
+    // ブラウザ起動
+    this.browser = await chromium.launch({ headless: this.options.headless ?? false });
     this.page = await this.browser.newPage();
 
-    // 初期化コード（Generator用）
-    await this.generator.init();
+    // ウィンドウサイズを少し大きくしておく
+    await this.page.setViewportSize({ width: 1280, height: 800 });
 
-    let isFinished = false;
+    if (this.options.startUrl) {
+      logger.spinner.text = `Navigating to ${this.options.startUrl}...`;
+      await this.page.goto(this.options.startUrl);
+    }
 
-    while (!isFinished) {
-      // 1. 観察 (Observation)
-      // Playwrightのアクセシビリティスナップショットを使用
-      // 必要に応じて snapshot.ts で整形処理を挟むと精度が向上します
-      const snapshot = await this.page.accessibility.snapshot();
-      const snapshotText = JSON.stringify(snapshot, null, 2); // 簡易的にJSON化
+    // テストファイル初期化
+    await this.generator.init(goal);
+    logger.stop('Ready to start loop.');
 
-      // 2. 思考 (Reasoning)
-      console.log('Thinking...');
-      const action = await this.brain.generateAction(goal, snapshotText, this.history);
+    let stepCount = 0;
+    const rawMax = this.options.maxSteps;
+    const MAX_STEPS = typeof rawMax === 'number' && rawMax > 0 ? rawMax : 20;
 
-      console.log(`🤖 Thought: ${action.thought}`);
-      console.log(`pw> ${action.code}`);
+    while (stepCount < MAX_STEPS) {
+      stepCount++;
+      logger.start(`Step ${stepCount}: Observing...`);
 
-      if (action.isFinished) {
-        console.log('✅ Task completed!');
-        isFinished = true;
-        break;
-      }
-
-      // 3. 実行 (Execution) & 4. 修復 (Healing)
       try {
-        // 安全に実行するためにFunctionコンストラクタを使用
-        // 実際には sandbox 環境での実行が望ましい
-        const runStep = new Function('page', `return (async () => { ${action.code} })()`);
-        await runStep(this.page);
+        // 1. Observe (Virtual ID Injection)
+        const stateText = await this.observer.captureState(this.page);
 
-        // 成功: 履歴に追加し、テストファイルに記録
-        this.history.push(`SUCCESS: ${action.code}`);
-        await this.generator.appendCode(action.code);
-      } catch (error: any) {
-        console.error(`❌ Execution Failed: ${error.message}`);
-        console.log('🩹 Healing...');
+        // 2. Think
+        logger.spinner.text = 'Thinking...';
+        const plan = await this.brain.think(goal, stateText, this.history.getHistory());
 
-        // 失敗: 履歴にエラーを追加して、ループの先頭に戻ることで再推論（Healing）させる
-        this.history.push(`ERROR executing "${action.code}": ${error.message}`);
-        // ここで wait を入れないと無限ループで API 制限にかかる可能性がある
-        await this.page.waitForTimeout(1000);
+        if (plan.isFinished) {
+          logger.stop('Task Completed!');
+          break;
+        }
+
+        logger.spinner.text = `Executing: ${plan.actionType} ${plan.targetId ? `on [${plan.targetId}]` : ''}`;
+
+        // 3. Execute & Reverse Engineer
+        const result = await this.executor.execute(plan, this.page);
+
+        if (result.success) {
+          logger.stop(); // Spinnerを止めてからログ出力
+          logger.success(`Action Success: ${plan.thought}`);
+
+          if (result.generatedCode) {
+            logger.thought(`Code: ${result.generatedCode}`);
+            await this.generator.appendCode(result.generatedCode);
+          }
+
+          this.history.add(`SUCCESS: ${plan.actionType} on ${plan.targetId || 'page'}`);
+        } else {
+          logger.fail(`Action Failed: ${result.error}`);
+          this.history.add(`ERROR: ${result.error}. Try a different approach.`);
+
+          // エラー時は少し待機
+          await this.page.waitForTimeout(2000);
+        }
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.fail(`System Error: ${errorMessage}`);
+        break;
       }
     }
 
-    // 最後にファイルを閉じる処理を追加
     await this.generator.finish();
+    if (this.browser) await this.browser.close();
 
-    await this.browser.close();
-    console.log(`📝 Test file generated: ${this.generator.getFilePath()}`);
+    logger.info(`📝 Test file generated: ${this.generator.getFilePath()}`);
   }
 }

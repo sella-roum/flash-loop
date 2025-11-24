@@ -2,6 +2,9 @@
   "name": "flash-loop",
   "version": "1.0.0",
   "description": "",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "main": "index.js",
   "scripts": {
     "build": "rimraf dist && tsc",
@@ -10,6 +13,9 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
+    "lint:all": "prettier --write . && eslint . --fix",
+    "build:clean": "rimraf dist && tsc",
+    "check": "npm run lint:all && npm run build:clean",
     "test": "playwright test",
     "prepare": "npm run build"
   },
@@ -18,20 +24,24 @@
   "dependencies": {
     "@ai-sdk/cerebras": "^1.0.31",
     "ai": "^5.0.100",
+    "chalk": "^4.1.2",
+    "commander": "^14.0.2",
     "dotenv": "^17.2.3",
+    "ora": "^5.4.1",
     "playwright": "^1.56.1",
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.56.1",
     "@types/node": "^24.10.1",
-    "@typescript-eslint/eslint-plugin": "^8.47.0",
-    "@typescript-eslint/parser": "^8.47.0",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-playwright": "^2.3.0",
     "prettier": "^3.6.2",
     "rimraf": "^6.1.2",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.47.0"
   }
 }

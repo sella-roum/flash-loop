@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { FlashLoop } from './core/loop';
 import * as dotenv from 'dotenv';
 import chalk from 'chalk';
@@ -15,7 +15,13 @@ program
   .argument('<goal>', 'The goal for the agent to achieve')
   .option('-u, --url <url>', 'Starting URL')
   .option('--headless', 'Run in headless mode', false)
-  .option('--max-steps <number>', 'Maximum number of steps', (val) => parseInt(val, 10))
+  .option('--max-steps <number>', 'Maximum number of steps', (val) => {
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      throw new InvalidArgumentError('Max steps must be a positive integer.');
+    }
+    return parsed;
+  })
   .action(async (goal, options) => {
     if (!process.env.CEREBRAS_API_KEY) {
       console.error(chalk.red('Error: CEREBRAS_API_KEY is not set in .env file.'));

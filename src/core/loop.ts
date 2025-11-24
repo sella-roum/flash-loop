@@ -52,7 +52,8 @@ export class FlashLoop {
     logger.stop('Ready to start loop.');
 
     let stepCount = 0;
-    const MAX_STEPS = this.options.maxSteps ?? 20;
+    const rawMax = this.options.maxSteps;
+    const MAX_STEPS = typeof rawMax === 'number' && rawMax > 0 ? rawMax : 20;
 
     while (stepCount < MAX_STEPS) {
       stepCount++;

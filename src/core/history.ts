@@ -10,10 +10,7 @@ export class HistoryManager {
    * 履歴を追加する
    * @param message アクションの結果やエラーメッセージ
    */
-  add(message: string) {
-    // タイムスタンプを追加して時系列を明確にする（オプション）
-    // const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    // this.logs.push(`[${timestamp}] ${message}`);
+  add(message: string): void {
     this.logs.push(message);
 
     // 履歴が長すぎる場合は古いものを削除（FIFO）
@@ -33,7 +30,7 @@ export class HistoryManager {
   /**
    * 履歴をクリアする（リセット用）
    */
-  clear() {
+  clear(): void {
     this.logs = [];
   }
 }

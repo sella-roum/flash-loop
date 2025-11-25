@@ -10,6 +10,7 @@ export interface FlashLoopOptions {
   startUrl?: string;
   headless?: boolean;
   maxSteps?: number;
+  viewport?: { width: number; height: number }; // ビューポート設定を追加
   // 以下、ライブラリ利用時のオプション
   page?: Page; // 既存のPageインスタンス
   logger?: ILogger; // 外部から注入するロガー
@@ -64,7 +65,8 @@ export class FlashLoop {
         headless: this.options.headless ?? false,
       });
       this.page = await this.browser.newPage();
-      await this.page.setViewportSize({ width: 1280, height: 800 });
+      const viewport = this.options.viewport ?? { width: 1280, height: 800 };
+      await this.page.setViewportSize(viewport);
     }
 
     if (this.options.startUrl) {
@@ -88,17 +90,11 @@ export class FlashLoop {
       try {
         // 1. Observe (DOM汚染なし、全フレーム走査)
         // 返り値の elementMap を Executor に渡すことで高速化
-        const { stateText, elementMap } = await this.observer.captureState(
-          this.page
-        );
+        const { stateText, elementMap } = await this.observer.captureState(this.page);
 
         // 2. Think
         this.logger.start('Thinking...');
-        const plan = await this.brain.think(
-          goal,
-          stateText,
-          this.history.getHistory()
-        );
+        const plan = await this.brain.think(goal, stateText, this.history.getHistory());
 
         if (plan.isFinished) {
           this.logger.stop('Task Completed based on AI decision.');
@@ -109,11 +105,7 @@ export class FlashLoop {
 
         // 3. Execute (Handle操作 -> Code生成)
         // マップを渡すことで、DOM再探索をスキップ
-        const result = await this.executor.execute(
-          plan,
-          this.page,
-          elementMap
-        );
+        const result = await this.executor.execute(plan, this.page, elementMap);
 
         if (result.success) {
           this.logger.stop(); // スピナー停止
@@ -124,9 +116,7 @@ export class FlashLoop {
             await this.generator.appendCode(result.generatedCode);
           }
 
-          this.history.add(
-            `SUCCESS: ${plan.actionType} on ${plan.targetId || 'page'}`
-          );
+          this.history.add(`SUCCESS: ${plan.actionType} on ${plan.targetId || 'page'}`);
         } else {
           this.logger.fail(`Action Failed: ${result.error}`);
           this.history.add(`ERROR: ${result.error}. Try a different approach.`);
@@ -135,8 +125,7 @@ export class FlashLoop {
           await this.page.waitForTimeout(2000);
         }
       } catch (error: unknown) {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
         this.logger.fail(`System Error: ${errorMessage}`);
         // システムエラーの場合は安全のためループを抜ける
         break;
@@ -152,9 +141,7 @@ export class FlashLoop {
 
     const output = this.generator.getOutput();
     this.logger.info(
-      this.isExternalPage
-        ? 'AI Agent finished.'
-        : `📝 Test file generated: ${output}`
+      this.isExternalPage ? 'AI Agent finished.' : `📝 Test file generated: ${output}`
     );
 
     return output;

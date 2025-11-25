@@ -31,10 +31,12 @@ Your goal is to achieve the user's objective on the web page.
 7. **Completion**: If the goal is fully achieved, set 'isFinished' to true.
 
 # ACTION TYPES
-- Basic: click, dblclick, hover
-- Input: fill, type, select_option, check, uncheck, upload
+- Basic: click, dblclick, right_click, hover, focus
+- Input: fill, type, clear, check, uncheck, select_option, upload
+- Advanced: drag_and_drop, keypress
 - Page: navigate, scroll, go_back, reload
-- Verify: assert_visible, assert_text, assert_url
+- Verify: assert_visible, assert_text, assert_value, assert_url
+- Meta: finish
 
 # OUTPUT FORMAT
 Return a JSON object matching the ActionSchema.

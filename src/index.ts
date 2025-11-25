@@ -53,7 +53,7 @@ program
 
       // 完了メッセージは FlashLoop 内でログ出力されるが、
       // CLI終了として明示的に完了ステータスを表示
-      if (output) {
+      if (output && output.trim().length > 0) {
         console.log(chalk.green('\n✨ Task Finished Successfully!'));
       }
     } catch (error) {

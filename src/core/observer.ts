@@ -1,5 +1,6 @@
 import { Page, Frame, ElementHandle } from 'playwright';
 import { ObservationResult, ElementContainer } from '../types';
+import { DOM_WAIT_TIMEOUT_MS } from '../constants';
 
 /**
  * セレクタ候補の型定義
@@ -135,7 +136,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
   private async waitForStability(page: Page) {
     try {
       // 最低限のロード待ち
-      await page.waitForLoadState('domcontentloaded', { timeout: 2000 });
+      await page.waitForLoadState('domcontentloaded', { timeout: DOM_WAIT_TIMEOUT_MS });
 
       // ネットワークの静定 (オプション: 500msだけ待つ)
       try {
@@ -147,7 +148,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
       // DOM変更の静定 (MutationObserver)
       await page.evaluate(() => {
         return new Promise<void>((resolve) => {
-          let timeout: any;
+          let timeout: ReturnType<typeof setTimeout>;
           const observer = new MutationObserver(() => {
             clearTimeout(timeout);
             timeout = setTimeout(() => {
@@ -222,12 +223,13 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
        */
       function isVisibleStyle(el: Element): boolean {
         const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
         return (
           style.display !== 'none' &&
           style.visibility !== 'hidden' &&
           style.opacity !== '0' &&
-          el.getBoundingClientRect().width > 0 &&
-          el.getBoundingClientRect().height > 0
+          rect.width > 0 &&
+          rect.height > 0
         );
       }
 
@@ -249,7 +251,11 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
        * 要素の一意なXPathを生成する
        */
       function getXPath(element: Element): string {
-        if (element.id !== '') return `//*[@id="${element.id}"]`;
+        if (element.id !== '') {
+          // エスケープ処理: ダブルクォートを含むIDに対応
+          const escapedId = element.id.replace(/"/g, '\\"');
+          return `//*[@id="${escapedId}"]`;
+        }
         if (element === document.body) return '/html/body';
         let ix = 0;
         const siblings = element.parentNode?.childNodes;
@@ -257,15 +263,10 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         for (let i = 0; i < siblings.length; i++) {
           const sibling = siblings[i];
           if (sibling === element) {
-            const parentPath = element.parentNode
-              ? getXPath(element.parentNode as Element)
-              : '';
+            const parentPath = element.parentNode ? getXPath(element.parentNode as Element) : '';
             return `${parentPath}/${element.tagName.toLowerCase()}[${ix + 1}]`;
           }
-          if (
-            sibling.nodeType === 1 &&
-            (sibling as Element).tagName === element.tagName
-          ) {
+          if (sibling.nodeType === 1 && (sibling as Element).tagName === element.tagName) {
             ix++;
           }
         }
@@ -300,9 +301,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
           (style.overflowY === 'scroll' || style.overflowY === 'auto');
 
         const isInteractive =
-          ['button', 'a', 'input', 'select', 'textarea', 'details', 'summary'].includes(
-            tagName
-          ) ||
+          ['button', 'a', 'input', 'select', 'textarea', 'details', 'summary'].includes(tagName) ||
           el.getAttribute('role') === 'button' ||
           el.getAttribute('role') === 'link' ||
           el.getAttribute('contenteditable') === 'true' ||
@@ -312,8 +311,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         if (!isInteractive) return;
 
         // テキスト取得とクリーニング
-        let text =
-          (el as HTMLElement).innerText || (el as HTMLInputElement).value || '';
+        let text = (el as HTMLElement).innerText || (el as HTMLInputElement).value || '';
         // 機密情報のマスク
         const inputType = el.getAttribute('type');
         if (
@@ -329,17 +327,13 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         const testId = el.getAttribute('data-testid');
 
         // Description (LLMに見せる名前)
-        const description =
-          ariaLabel || placeholder || cleanText || 'Unlabeled Element';
+        const description = ariaLabel || placeholder || cleanText || 'Unlabeled Element';
 
         // --- Pre-computation of Selectors (一意性チェック) ---
         const selectors: SelectorCandidates = {};
 
         // 1. Test ID
-        if (
-          testId &&
-          document.querySelectorAll(`[data-testid="${testId}"]`).length === 1
-        ) {
+        if (testId && document.querySelectorAll(`[data-testid="${testId}"]`).length === 1) {
           selectors.testId = testId;
         }
 
@@ -353,11 +347,8 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
 
         // 3. Text (簡易判定)
         if (cleanText) {
-          const exactMatches = Array.from(
-            document.querySelectorAll(tagName)
-          ).filter((e) => {
-            const t =
-              (e as HTMLElement).innerText || (e as HTMLInputElement).value;
+          const exactMatches = Array.from(document.querySelectorAll(tagName)).filter((e) => {
+            const t = (e as HTMLElement).innerText || (e as HTMLInputElement).value;
             return t && t.replace(/\s+/g, ' ').trim() === cleanText;
           });
           if (exactMatches.length === 1) {
@@ -368,9 +359,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         // 4. Role
         const role =
           el.getAttribute('role') ||
-          (['button', 'link', 'heading', 'checkbox', 'radio'].includes(tagName)
-            ? tagName
-            : null);
+          (['button', 'link', 'heading', 'checkbox', 'radio'].includes(tagName) ? tagName : null);
         if (role && (ariaLabel || cleanText)) {
           selectors.role = { role, name: ariaLabel || cleanText };
         }
@@ -404,7 +393,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
       const rawHandle = await itemHandle.getProperty('element');
       // 重要: JSHandle から ElementHandle への変換
       const elementHandle = rawHandle.asElement();
-      
+
       const metadataHandle = await itemHandle.getProperty('metadata');
       const metadata = await metadataHandle.jsonValue();
 
@@ -416,6 +405,9 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
       }
     }
 
+    // ルートハンドルの破棄（メモリリーク対策）
+    await resultHandle.dispose();
+
     return { frame, frameSelectorChain, items };
   }
 
@@ -425,26 +417,29 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
    */
   private async calculateFrameSelector(handle: ElementHandle): Promise<string> {
     return await handle.evaluate((node) => {
+      // Element型にキャストしてプロパティにアクセスする
       const el = node as Element;
-
-      // 1. 強い属性
-      if (el.getAttribute('name'))
-        return `iframe[name="${el.getAttribute('name')}"]`;
-      if (el.id) return `iframe[id="${el.id}"]`;
+      // name属性があればベスト
+      const name = el.getAttribute('name');
+      if (name) {
+        return `iframe[name="${name.replace(/"/g, '\\"')}"]`;
+      }
+      // id属性があれば次点
+      if (el.id) {
+        return `iframe[id="${el.id.replace(/"/g, '\\"')}"]`;
+      }
+      // classがあれば使う
       if (el.classList.length > 0) return `iframe.${el.classList[0]}`;
-
-      // 2. src属性 (クエリパラメータ無視)
+      // src属性は変わる可能性が高いが、他になければ使う
       const src = el.getAttribute('src');
-      if (src) return `iframe[src*="${src.split('?')[0]}"]`;
-
-      // 3. 最終手段: DOM階層におけるインデックス (nth-of-type)
+      if (src) return `iframe[src*="${src.split('?')[0]}"]`; // クエリパラメータ除去
+      // 最終手段
       let ix = 1; // CSS selector is 1-based
       let sibling = el.previousElementSibling;
       while (sibling) {
         if (sibling.tagName === el.tagName) ix++;
         sibling = sibling.previousElementSibling;
       }
-
       return `iframe:nth-of-type(${ix})`;
     });
   }

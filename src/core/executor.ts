@@ -17,7 +17,8 @@ export class Executor {
   ): Promise<ExecutionResult> {
     try {
       // --- Meta Actions ---
-      if (plan.isFinished) {
+      // finish アクションも終了として扱う
+      if (plan.isFinished || plan.actionType === 'finish') {
         return {
           success: true,
           generatedCode: '// Task Completed based on AI decision',
@@ -64,10 +65,11 @@ export class Executor {
       // --- Assert URL ---
       if (plan.actionType === 'assert_url') {
         const url = plan.value || '';
-        await expect(page).toHaveURL(new RegExp(url));
+        // 正規表現ではなく、文字列マッチングを使用 (ReDoS対策)
+        await expect(page).toHaveURL(url, { timeout: 5000 });
         return {
           success: true,
-          generatedCode: `await expect(page).toHaveURL(/${url}/);`,
+          generatedCode: `await expect(page).toHaveURL('${url.replace(/'/g, "\\'")}');`,
           retryable: false,
         };
       }
@@ -91,8 +93,7 @@ export class Executor {
 
       return { success: true, generatedCode: code, retryable: false };
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return { success: false, error: errorMessage, retryable: true };
     }
   }
@@ -134,10 +135,7 @@ export class Executor {
   /**
    * ElementHandleに対する操作を実行
    */
-  private async performHandleAction(
-    target: ElementContainer,
-    plan: ActionPlan
-  ) {
+  private async performHandleAction(target: ElementContainer, plan: ActionPlan) {
     const h = target.handle;
     const val = plan.value || '';
 
@@ -177,6 +175,7 @@ export class Executor {
         try {
           await h.selectOption({ label: val });
         } catch {
+          // labelでの選択に失敗、valueで再試行
           await h.selectOption({ value: val });
         }
         break;
@@ -196,9 +195,7 @@ export class Executor {
         break;
       case 'drag_and_drop':
         // ElementHandleにはdragToがないため、意図的にエラーを投げてLocatorリカバリへ回す
-        throw new Error(
-          'ForceRecovery: Drag and drop requires Locator execution'
-        );
+        throw new Error('ForceRecovery: Drag and drop requires Locator execution');
 
       // Assertions (Handleでは限定的)
       case 'assert_visible':
@@ -206,8 +203,7 @@ export class Executor {
         break;
       case 'assert_text': {
         const text = await h.innerText();
-        if (!text.includes(val))
-          throw new Error(`Text mismatch. Found: "${text}"`);
+        if (!text.includes(val)) throw new Error(`Text mismatch. Found: "${text}"`);
         break;
       }
       case 'assert_value': {
@@ -270,9 +266,11 @@ export class Executor {
         await locator.uncheck();
         break;
       case 'select_option':
-        await locator
-          .selectOption({ label: val })
-          .catch(() => locator.selectOption({ value: val }));
+        try {
+          await locator.selectOption({ label: val });
+        } catch {
+          await locator.selectOption({ value: val });
+        }
         break;
       case 'upload':
         await locator.setInputFiles(val);
@@ -283,10 +281,7 @@ export class Executor {
       case 'drag_and_drop': {
         const target2 = elementMap.get(plan.targetId2 || '');
         if (target2) {
-          const context2 = this.buildContext(
-            page,
-            target2.frameSelectorChain
-          );
+          const context2 = this.buildContext(page, target2.frameSelectorChain);
           const locator2 = this.reconstructLocator(context2, target2);
           await locator.dragTo(locator2);
         } else {
@@ -296,7 +291,7 @@ export class Executor {
       }
       case 'scroll':
         await locator.evaluate((el) =>
-          el.scrollBy({ top: 300, behavior: 'smooth' })
+          (el as HTMLElement).scrollBy({ top: 300, behavior: 'smooth' })
         );
         break;
       // Assertions
@@ -309,6 +304,8 @@ export class Executor {
       case 'assert_value':
         await expect(locator).toHaveValue(val);
         break;
+      default:
+        throw new Error(`Unsupported action for locator recovery: ${plan.actionType}`);
     }
   }
 
@@ -337,10 +334,7 @@ export class Executor {
   /**
    * メタデータから最適なLocatorオブジェクトを生成するヘルパー
    */
-  private reconstructLocator(
-    context: Page | FrameLocator,
-    target: ElementContainer
-  ): Locator {
+  private reconstructLocator(context: Page | FrameLocator, target: ElementContainer): Locator {
     const s = target.selectors;
 
     // 優先順位: TestID > Role > Placeholder > Text > XPath
@@ -349,10 +343,9 @@ export class Executor {
     }
     if (s.role) {
       // Playwrightの型定義にキャスト
-      return context.getByRole(
-        s.role.role as Parameters<Page['getByRole']>[0],
-        { name: s.role.name }
-      );
+      return context.getByRole(s.role.role as Parameters<Page['getByRole']>[0], {
+        name: s.role.name,
+      });
     }
     if (s.placeholder) {
       return context.getByPlaceholder(s.placeholder);
@@ -376,11 +369,12 @@ export class Executor {
     const base = this.buildContextCode(target.frameSelectorChain);
 
     // 2. セレクタ部分 (文字列)
+    // インジェクション対策として JSON.stringify を使用
     let selectorCode = '';
     const s = target.selectors;
 
     if (s.testId) {
-      selectorCode = `.getByTestId('${s.testId}')`;
+      selectorCode = `.getByTestId(${JSON.stringify(s.testId)})`;
     } else if (s.role) {
       selectorCode = `.getByRole('${s.role.role}', { name: ${JSON.stringify(s.role.name)} })`;
     } else if (s.placeholder) {
@@ -444,7 +438,7 @@ export class Executor {
           const base2 = this.buildContextCode(target2.frameSelectorChain);
           let sel2 = '';
           const s2 = target2.selectors;
-          if (s2.testId) sel2 = `.getByTestId('${s2.testId}')`;
+          if (s2.testId) sel2 = `.getByTestId(${JSON.stringify(s2.testId)})`;
           else if (s2.role)
             sel2 = `.getByRole('${s2.role.role}', { name: ${JSON.stringify(s2.role.name)} })`;
           else sel2 = `.locator('${target2.xpath}')`;

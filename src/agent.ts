@@ -19,11 +19,7 @@ export interface AgentOptions {
  * @param options オプション（最大ステップ数など）
  * @returns 生成されたPlaywrightコード
  */
-export async function agent(
-  page: Page,
-  goal: string,
-  options: AgentOptions = {}
-) {
+export async function agent(page: Page, goal: string, options: AgentOptions = {}): Promise<string> {
   // 1. CIガード
   if (process.env.CI && !process.env.ALLOW_AI_IN_CI) {
     console.log(`⚠️ [Flash-Loop] Skipped in CI environment: "${goal}"`);
@@ -50,7 +46,7 @@ export async function agent(
     // FlashLoopの初期化 (ページインスタンスを渡す)
     const loop = new FlashLoop({
       page,
-      maxSteps: options.maxSteps || 15,
+      maxSteps: options.maxSteps ?? 15, // 0が指定された場合も許容するように ?? を使用
       logger: new ConsoleLogger(), // テスト出力に適したロガー
     });
 

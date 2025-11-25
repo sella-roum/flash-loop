@@ -56,7 +56,11 @@ test('FlashLoop Auto-Generated Test', async ({ page }) => {
   // Setup default timeout
   test.setTimeout(60000);
 `;
-    await fs.writeFile(this.filePath, header, 'utf-8');
+    try {
+      await fs.writeFile(this.filePath, header, 'utf-8');
+    } catch (error) {
+      throw new Error(`Failed to create test file at ${this.filePath}: ${error}`);
+    }
   }
 
   async appendCode(code: string): Promise<void> {

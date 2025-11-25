@@ -37,8 +37,15 @@ export async function agent(page: Page, goal: string, options: AgentOptions = {}
 
   // 2. Playwright Step として実行
   return await test.step(`🤖 AI Agent: ${goal}`, async () => {
-    // 3. タイムアウト延長 (AIは時間がかかるため +90秒)
-    test.setTimeout(test.info().timeout + 90000);
+    // 3. タイムアウト延長 (AIは時間がかかるため、最低2分(120,000ms)を確保)
+    // 以前の `test.info().timeout + 90000` は累積の問題があったため修正
+    // 現在のタイムアウト設定が120秒未満の場合のみ、120秒に延長する
+    const currentTimeout = test.info().timeout;
+    const MIN_AI_TIMEOUT = 120000;
+
+    if (currentTimeout < MIN_AI_TIMEOUT) {
+      test.setTimeout(MIN_AI_TIMEOUT);
+    }
 
     // テスト実行用の設定でFlashLoopを初期化
     const loop = new FlashLoop({
@@ -70,7 +77,7 @@ export async function agent(page: Page, goal: string, options: AgentOptions = {}
     } finally {
       // 6. DOMクリーンアップ (必須)
       // 途中でエラーになっても、注入したIDが残らないようにする
-      await loop.observer.cleanup(page);
+      await loop.cleanup();
     }
   });
 }

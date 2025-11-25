@@ -57,12 +57,27 @@ export class Executor {
         const src = await frameElement.getAttribute('src');
 
         let frameSelector = '';
-        if (name) frameSelector = `iframe[name=${JSON.stringify(name)}]`;
-        else if (id) frameSelector = `iframe[id=${JSON.stringify(id)}]`;
-        else if (src) frameSelector = `iframe[src=${JSON.stringify(src)}]`;
-        else frameSelector = `iframe[src=${JSON.stringify(frame.url())}]`;
+        if (name) {
+          frameSelector = `iframe[name=${JSON.stringify(name)}]`;
+        } else if (id) {
+          frameSelector = `iframe[id=${JSON.stringify(id)}]`;
+        } else if (src) {
+          // src属性が存在する場合のみ使用。frame.url()は解決済みURLのため、
+          // iframeタグのsrc属性と一致しない可能性があるため使用しない。
+          frameSelector = `iframe[src=${JSON.stringify(src)}]`;
+        } else {
+          // フォールバック: フレームを特定できない場合、エラーにするか、あるいはnthで指定するか。
+          // ここでは安全のためエラーを含んだコメントを出力する
+          frameSelector = 'iframe /* FIXME: Could not identify frame uniquely */';
+        }
 
-        baseLocatorCode = `page.frameLocator(${JSON.stringify(frameSelector)}).${bestSelector}`;
+        // frameLocatorを使用する場合
+        if (frameSelector.includes('iframe[')) {
+          baseLocatorCode = `page.frameLocator(${JSON.stringify(frameSelector)}).${bestSelector}`;
+        } else {
+          // セレクタが特定できなかった場合のフォールバック（壊れやすいコード）
+          baseLocatorCode = `page.frameLocator('${frameSelector}').${bestSelector}`;
+        }
       }
 
       // 3. アクション実行 & コード生成
@@ -159,20 +174,28 @@ export class Executor {
       candidates.push(`getByText(${s(attributes.text)})`);
     }
 
+    // Frameオブジェクトに直接 getBy... メソッドが存在しない場合があるため、
+    // locator('body') を経由して Locator オブジェクトを作成し、そこからメソッドを呼ぶ。
+    // bodyが存在しないケース（SVGなど）も考慮し、本来は :root などが良いが、Playwrightのlocatorは
+    // CSSセレクタを引数に取るため、ここでは 'body' を起点とする。
+    const frameLocator = frame.locator('body');
+
     for (const selector of candidates) {
       try {
         let count = 0;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const anyFrame = frame as any;
 
         if (selector.startsWith('getByTestId')) {
-          count = await anyFrame.getByTestId(attributes.testid!).count();
+          count = await frameLocator.getByTestId(attributes.testid!).count();
         } else if (selector.startsWith('getByRole')) {
-          if (role && name) count = await anyFrame.getByRole(role, { name }).count();
+          if (role && name) {
+            count = await frameLocator
+              .getByRole(role as Parameters<Page['getByRole']>[0], { name })
+              .count();
+          }
         } else if (selector.startsWith('getByPlaceholder')) {
-          count = await anyFrame.getByPlaceholder(attributes.placeholder!).count();
+          count = await frameLocator.getByPlaceholder(attributes.placeholder!).count();
         } else if (selector.startsWith('getByText')) {
-          count = await anyFrame.getByText(attributes.text!).count();
+          count = await frameLocator.getByText(attributes.text!).count();
         }
 
         if (count === 1) {

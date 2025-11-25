@@ -7,11 +7,7 @@ import { Brain } from './brain';
 import { Observer } from './observer';
 import { Executor } from './executor';
 import { HistoryManager } from './history';
-import {
-  IGenerator,
-  FileGenerator,
-  MemoryGenerator,
-} from '../tools/generator';
+import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
 
 export interface FlashLoopOptions {
@@ -30,14 +26,14 @@ export class FlashLoop {
   // あるいは型定義を Page | undefined にする。
   // ここでは外部注入された場合は必ず存在するため、 ! を使用。
   private page!: Page;
-  
+
   private brain: Brain;
-  public observer: Observer;
+  private observer: Observer;
   private executor: Executor;
   private history: HistoryManager;
   private generator: IGenerator;
   private logger: ILogger;
-  
+
   private options: FlashLoopOptions;
   private isExternalPage: boolean;
 
@@ -150,8 +146,19 @@ export class FlashLoop {
     }
 
     const output = this.generator.getOutput();
-    this.logger.info(this.isExternalPage ? 'AI Agent finished.' : `📝 Test file generated: ${output}`);
+    this.logger.info(
+      this.isExternalPage ? 'AI Agent finished.' : `📝 Test file generated: ${output}`
+    );
 
     return output;
+  }
+
+  /**
+   * DOMから注入した属性をクリーンアップします（ライブラリモード用）
+   */
+  async cleanup(): Promise<void> {
+    if (this.page) {
+      await this.observer.cleanup(this.page);
+    }
   }
 }

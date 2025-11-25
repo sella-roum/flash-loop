@@ -14,6 +14,7 @@ export interface ILogger {
   info(msg: string): void;
   success(msg: string): void;
   fail(msg: string): void;
+  error(msg: string): void;
   action(type: string, target: string): void;
   thought(text: string): void;
 }
@@ -100,6 +101,10 @@ export class ConsoleLogger implements ILogger {
   }
 
   fail(msg: string): void {
+    console.error(`❌ ${msg}`);
+  }
+
+  error(msg: string): void {
     console.error(`❌ ${msg}`);
   }
 

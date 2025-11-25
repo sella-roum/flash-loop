@@ -91,7 +91,8 @@ export class Executor {
 
       return { success: true, generatedCode: code, retryable: false };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       return { success: false, error: errorMessage, retryable: true };
     }
   }
@@ -133,7 +134,10 @@ export class Executor {
   /**
    * ElementHandleに対する操作を実行
    */
-  private async performHandleAction(target: ElementContainer, plan: ActionPlan) {
+  private async performHandleAction(
+    target: ElementContainer,
+    plan: ActionPlan
+  ) {
     const h = target.handle;
     const val = plan.value || '';
 
@@ -192,7 +196,9 @@ export class Executor {
         break;
       case 'drag_and_drop':
         // ElementHandleにはdragToがないため、意図的にエラーを投げてLocatorリカバリへ回す
-        throw new Error('ForceRecovery: Drag and drop requires Locator execution');
+        throw new Error(
+          'ForceRecovery: Drag and drop requires Locator execution'
+        );
 
       // Assertions (Handleでは限定的)
       case 'assert_visible':
@@ -200,7 +206,8 @@ export class Executor {
         break;
       case 'assert_text': {
         const text = await h.innerText();
-        if (!text.includes(val)) throw new Error(`Text mismatch. Found: "${text}"`);
+        if (!text.includes(val))
+          throw new Error(`Text mismatch. Found: "${text}"`);
         break;
       }
       case 'assert_value': {
@@ -276,7 +283,10 @@ export class Executor {
       case 'drag_and_drop': {
         const target2 = elementMap.get(plan.targetId2 || '');
         if (target2) {
-          const context2 = this.buildContext(page, target2.frameSelectorChain);
+          const context2 = this.buildContext(
+            page,
+            target2.frameSelectorChain
+          );
           const locator2 = this.reconstructLocator(context2, target2);
           await locator.dragTo(locator2);
         } else {
@@ -285,7 +295,9 @@ export class Executor {
         break;
       }
       case 'scroll':
-        await locator.evaluate((el) => el.scrollBy({ top: 300, behavior: 'smooth' }));
+        await locator.evaluate((el) =>
+          el.scrollBy({ top: 300, behavior: 'smooth' })
+        );
         break;
       // Assertions
       case 'assert_visible':
@@ -325,7 +337,10 @@ export class Executor {
   /**
    * メタデータから最適なLocatorオブジェクトを生成するヘルパー
    */
-  private reconstructLocator(context: Page | FrameLocator, target: ElementContainer): Locator {
+  private reconstructLocator(
+    context: Page | FrameLocator,
+    target: ElementContainer
+  ): Locator {
     const s = target.selectors;
 
     // 優先順位: TestID > Role > Placeholder > Text > XPath
@@ -334,9 +349,10 @@ export class Executor {
     }
     if (s.role) {
       // Playwrightの型定義にキャスト
-      return context.getByRole(s.role.role as Parameters<Page['getByRole']>[0], {
-        name: s.role.name,
-      });
+      return context.getByRole(
+        s.role.role as Parameters<Page['getByRole']>[0],
+        { name: s.role.name }
+      );
     }
     if (s.placeholder) {
       return context.getByPlaceholder(s.placeholder);

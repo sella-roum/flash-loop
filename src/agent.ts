@@ -19,7 +19,11 @@ export interface AgentOptions {
  * @param options オプション（最大ステップ数など）
  * @returns 生成されたPlaywrightコード
  */
-export async function agent(page: Page, goal: string, options: AgentOptions = {}) {
+export async function agent(
+  page: Page,
+  goal: string,
+  options: AgentOptions = {}
+) {
   // 1. CIガード
   if (process.env.CI && !process.env.ALLOW_AI_IN_CI) {
     console.log(`⚠️ [Flash-Loop] Skipped in CI environment: "${goal}"`);

@@ -60,8 +60,9 @@ export class FlashLoop {
       logger.start(`Step ${stepCount}: Observing...`);
 
       try {
-        // 1. Observe (Virtual ID Injection)
-        const stateText = await this.observer.captureState(this.page);
+        // 1. Observe (DOM汚染なし、全フレーム走査)
+        // 返り値の elementMap を Executor に渡すことで高速化
+        const { stateText, elementMap } = await this.observer.captureState(this.page);
 
         // 2. Think
         logger.spinner.text = 'Thinking...';
@@ -74,8 +75,9 @@ export class FlashLoop {
 
         logger.spinner.text = `Executing: ${plan.actionType} ${plan.targetId ? `on [${plan.targetId}]` : ''}`;
 
-        // 3. Execute & Reverse Engineer
-        const result = await this.executor.execute(plan, this.page);
+        // 3. Execute (Handle操作 -> Code生成)
+        // マップを渡すことで、DOM再探索をスキップ
+        const result = await this.executor.execute(plan, this.page, elementMap);
 
         if (result.success) {
           logger.stop(); // Spinnerを止めてからログ出力
@@ -91,7 +93,7 @@ export class FlashLoop {
           logger.fail(`Action Failed: ${result.error}`);
           this.history.add(`ERROR: ${result.error}. Try a different approach.`);
 
-          // エラー時は少し待機
+          // エラー時は少し待機して画面安定化を待つ
           await this.page.waitForTimeout(2000);
         }
       } catch (error: unknown) {

@@ -6,12 +6,17 @@ import { ActionPlan, ExecutionResult } from '../types';
  */
 export class Executor {
   /**
+<<<<<<< Updated upstream
    * ActionPlanに基づいて操作を実行します。
    * Virtual IDで操作し、事後的にベストなセレクタを逆算・検証します。
    */
-  async execute(plan: ActionPlan, page: Page): Promise<ExecutionResult> {
+  async execute(
+    plan: ActionPlan,
+    page: Page,
+    elementMap: Map<string, ElementContainer>
+  ): Promise<ExecutionResult> {
     try {
-      // 終了判定
+      // --- Meta Actions ---
       if (plan.isFinished) {
         return {
           success: true,
@@ -20,14 +25,15 @@ export class Executor {
         };
       }
 
-      let generatedCode = '';
-
-      // --- Navigation Action ---
+      // --- Navigation / Page Actions ---
       if (plan.actionType === 'navigate') {
-        if (!plan.value) throw new Error('Value (URL) is required for navigate action');
+        if (!plan.value) throw new Error('Value is required for navigation');
         await page.goto(plan.value);
-        generatedCode = `await page.goto('${plan.value}');`;
-        return { success: true, generatedCode, retryable: true };
+        return {
+          success: true,
+          generatedCode: `await page.goto('${plan.value}');`,
+          retryable: true,
+        };
       }
 
       // --- Interaction Actions (click, fill, assertion) ---
@@ -87,9 +93,60 @@ export class Executor {
       } else {
         // 未知のアクションタイプへの防御
         throw new Error(`Unsupported actionType: ${plan.actionType}`);
+=======
+      if (plan.actionType === 'reload') {
+        await page.reload();
+        return {
+          success: true,
+          generatedCode: 'await page.reload();',
+          retryable: true,
+        };
       }
 
-      return { success: true, generatedCode, retryable: false };
+      if (plan.actionType === 'go_back') {
+        await page.goBack();
+        return {
+          success: true,
+          generatedCode: 'await page.goBack();',
+          retryable: true,
+        };
+      }
+
+      // --- Global Scroll (ターゲット指定なし) ---
+      if (plan.actionType === 'scroll' && !plan.targetId) {
+        await page.mouse.wheel(0, 500);
+        // グローバルスクロールはコード生成しない（またはevaluateで記述）
+        return { success: true, generatedCode: '', retryable: true };
+>>>>>>> Stashed changes
+      }
+
+      // --- Assert URL ---
+      if (plan.actionType === 'assert_url') {
+        const url = plan.value || '';
+        await expect(page).toHaveURL(new RegExp(url));
+        return {
+          success: true,
+          generatedCode: `await expect(page).toHaveURL(/${url}/);`,
+          retryable: false,
+        };
+      }
+
+      // --- Element Interaction ---
+      // ここから先は targetId が必須
+      const target = elementMap.get(plan.targetId || '');
+
+      // 要素が見つからない場合
+      if (!target) {
+        throw new Error(`Virtual ID "${plan.targetId}" not found in memory.`);
+      }
+
+      // アクション実行 (Handle -> Recovery)
+      await this.performAction(target, plan, page, elementMap);
+
+      // コード生成 (Metadata based)
+      const code = this.generatePlaywrightCode(target, plan, elementMap);
+
+      return { success: true, generatedCode: code, retryable: false };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return { success: false, error: errorMessage, retryable: true };
@@ -97,10 +154,14 @@ export class Executor {
   }
 
   /**
-   * ページ内の全フレームを探索して、指定されたVirtual IDを持つ要素を探す
+   * 実際の操作を行う。
+   * まずElementHandleで試み、StaleエラーならLocator再構築でリカバリする。
    */
-  private async findTargetInFrames(
+  private async performAction(
+    target: ElementContainer,
+    plan: ActionPlan,
     page: Page,
+<<<<<<< Updated upstream
     id: string
   ): Promise<{ elementHandle: ElementHandle | null; frame: Frame | null }> {
     const frames = page.frames();
@@ -113,9 +174,31 @@ export class Executor {
         }
       } catch {
         // アクセスできないフレームは無視
+=======
+    elementMap: Map<string, ElementContainer>
+  ) {
+    try {
+      // 1. Handleでの高速実行
+      await this.performHandleAction(target, plan);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // Stale Element / Detached エラーの場合のみリカバリを試みる
+      if (
+        msg.includes('detached') ||
+        msg.includes('target closed') ||
+        msg.includes('stale') ||
+        msg.includes('Execution context was destroyed') ||
+        msg.includes('ForceRecovery') // 意図的なリカバリ要求
+      ) {
+        console.warn(
+          `[Executor] Action failed with handle (ID: ${target.id}). Recovering with selectors...`
+        );
+        await this.recoverAndExecute(target, plan, page, elementMap);
+      } else {
+        throw error; // その他のエラー（not visibleなど）はそのまま投げる
+>>>>>>> Stashed changes
       }
     }
-    return { elementHandle: null, frame: null };
   }
 
   /**

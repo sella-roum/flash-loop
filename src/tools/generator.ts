@@ -1,7 +1,42 @@
+/**
+ * src/tools/generator.ts
+ * AIが生成したコードを保存・管理するためのツール
+ */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
-export class Generator {
+/**
+ * ジェネレータのインターフェース
+ */
+export interface IGenerator {
+  /**
+   * 生成プロセスの初期化
+   * @param goal ユーザーのゴール
+   */
+  init(goal: string): Promise<void>;
+
+  /**
+   * コード行を追加
+   * @param code 追加するPlaywrightコード
+   */
+  appendCode(code: string): Promise<void>;
+
+  /**
+   * 生成プロセスの終了処理
+   */
+  finish(): Promise<void>;
+
+  /**
+   * 生成結果の取得
+   * ファイルパスまたはコード内容そのものを返す
+   */
+  getOutput(): string;
+}
+
+/**
+ * CLI用: ファイルシステムに直接書き込むジェネレータ
+ */
+export class FileGenerator implements IGenerator {
   private filePath: string;
 
   constructor() {
@@ -10,7 +45,7 @@ export class Generator {
     this.filePath = path.join(process.cwd(), `generated_test_${timestamp}.spec.ts`);
   }
 
-  async init(goal: string) {
+  async init(goal: string): Promise<void> {
     const header = `import { test, expect } from '@playwright/test';
 
 /**
@@ -24,7 +59,7 @@ test('FlashLoop Auto-Generated Test', async ({ page }) => {
     await fs.writeFile(this.filePath, header, 'utf-8');
   }
 
-  async appendCode(code: string) {
+  async appendCode(code: string): Promise<void> {
     // インデントを追加して書き込み
     const indentedCode = code
       .split('\n')
@@ -33,11 +68,34 @@ test('FlashLoop Auto-Generated Test', async ({ page }) => {
     await fs.appendFile(this.filePath, `${indentedCode}\n`, 'utf-8');
   }
 
-  async finish() {
+  async finish(): Promise<void> {
     await fs.appendFile(this.filePath, '});\n', 'utf-8');
   }
 
-  getFilePath() {
+  getOutput(): string {
     return this.filePath;
+  }
+}
+
+/**
+ * ライブラリ用: メモリ上にコードを保持するジェネレータ
+ */
+export class MemoryGenerator implements IGenerator {
+  private codeLines: string[] = [];
+
+  async init(goal: string): Promise<void> {
+    this.codeLines.push(`// AI Action Start: Goal "${goal}"`);
+  }
+
+  async appendCode(code: string): Promise<void> {
+    this.codeLines.push(code);
+  }
+
+  async finish(): Promise<void> {
+    this.codeLines.push('// AI Action End');
+  }
+
+  getOutput(): string {
+    return this.codeLines.join('\n');
   }
 }

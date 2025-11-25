@@ -1,5 +1,10 @@
+/**
+ * src/index.ts
+ * CLIアプリケーションのエントリーポイント
+ */
 import { Command, InvalidArgumentError } from 'commander';
 import { FlashLoop } from './core/loop';
+import { SpinnerLogger } from './tools/logger';
 import * as dotenv from 'dotenv';
 import chalk from 'chalk';
 
@@ -11,7 +16,7 @@ const program = new Command();
 program
   .name('flash-loop')
   .description('AI-powered autonomous browser agent (Flash-Loop)')
-  .version('1.0.0')
+  .version('2.1.0')
   .argument('<goal>', 'The goal for the agent to achieve')
   .option('-u, --url <url>', 'Starting URL')
   .option('--headless', 'Run in headless mode', false)
@@ -32,30 +37,16 @@ program
       process.exit(1);
     }
 
-<<<<<<< Updated upstream
-    console.log(chalk.cyan('⚡ Starting Flash-Loop...'));
-=======
-<<<<<<< Updated upstream
-    console.log(chalk.cyan('⚡ Starting Flash-Loop...'));
-=======
     // CLI実行用のロガーを作成
     const logger = new SpinnerLogger();
-    console.log(chalk.cyan('⚡ Starting Flash-Loop v1.0...'));
->>>>>>> Stashed changes
->>>>>>> Stashed changes
+    console.log(chalk.cyan('⚡ Starting Flash-Loop v2.1...'));
 
     try {
       const agent = new FlashLoop({
         startUrl: options.url,
         headless: options.headless,
         maxSteps: options.maxSteps,
-<<<<<<< Updated upstream
-=======
-<<<<<<< Updated upstream
-=======
         logger: logger,
->>>>>>> Stashed changes
->>>>>>> Stashed changes
       });
 
       const output = await agent.start(goal);

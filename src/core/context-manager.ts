@@ -62,6 +62,9 @@ export class ContextManager {
 
       // セーフティネット: AIが処理しない場合、一定時間後に自動で閉じる
       this.pendingDialogTimeout = setTimeout(async () => {
+        // 既に処理済みであれば何もしない
+        if (!this.pendingDialog) return;
+
         console.warn(
           '⚠️ Dialog handling timed out. Automatically dismissing/accepting to unblock execution...'
         );
@@ -109,6 +112,10 @@ export class ContextManager {
     let targetPage: Page | undefined;
 
     if (typeof target === 'number') {
+      // インデックスの範囲チェックを追加
+      if (target < 0 || target >= this.pages.length) {
+        throw new Error(`Tab index ${target} is out of range (0-${this.pages.length - 1}).`);
+      }
       targetPage = this.pages[target];
     } else {
       // タイトルまたはURLで検索

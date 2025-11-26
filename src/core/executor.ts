@@ -72,7 +72,8 @@ export class Executor {
         await page.goto(plan.value);
         return {
           success: true,
-          generatedCode: `await page.goto('${plan.value}');`,
+          // URLのエスケープ処理を追加
+          generatedCode: `await page.goto('${plan.value.replace(/'/g, "\\'")}');`,
           retryable: true,
         };
       }
@@ -99,15 +100,30 @@ export class Executor {
       // 1. Double-Check
       const { locator, code: selectorCode } = await this.getRobustLocator(target, page);
 
+      // Drag and Drop 用の補助ロケータ解決
+      let auxLocator: Locator | undefined;
+      let auxCode: string | undefined;
+
+      if (plan.actionType === 'drag_and_drop') {
+        if (!plan.targetId2) throw new Error('Drag and drop requires targetId2');
+        const target2 = elementMap.get(plan.targetId2);
+        if (!target2) throw new Error(`Target 2 (ID: ${plan.targetId2}) not found`);
+        const res2 = await this.getRobustLocator(target2, page);
+        auxLocator = res2.locator;
+        auxCode = res2.code;
+      }
+
       // 2. Execute Action
-      await this.performLocatorAction(locator, plan, elementMap, page);
+      // 補助ロケータ(auxLocator)を渡す
+      await this.performLocatorAction(locator, plan, page, auxLocator);
 
       // 3. Stabilization
       await this.waitForStabilization(page);
 
       return {
         success: true,
-        generatedCode: this.generateCode(selectorCode, plan),
+        // 補助コード(auxCode)を渡して、正しいD&Dコードを生成する
+        generatedCode: this.generateCode(selectorCode, plan, auxCode),
         retryable: false,
       };
     } catch (error) {
@@ -184,8 +200,8 @@ export class Executor {
   private async performLocatorAction(
     locator: Locator,
     plan: ActionPlan,
-    elementMap: Map<string, ElementContainer>,
-    page: Page
+    page: Page,
+    auxLocator?: Locator
   ) {
     const val = plan.value || '';
     switch (plan.actionType) {
@@ -252,11 +268,8 @@ export class Executor {
         break;
 
       case 'drag_and_drop': {
-        if (!plan.targetId2) throw new Error('Drag and drop requires targetId2');
-        const target2 = elementMap.get(plan.targetId2);
-        if (!target2) throw new Error(`Target 2 (ID: ${plan.targetId2}) not found`);
-        const result2 = await this.getRobustLocator(target2, page);
-        await locator.dragTo(result2.locator);
+        if (!auxLocator) throw new Error('Drag and drop requires auxiliary locator (target2)');
+        await locator.dragTo(auxLocator);
         break;
       }
 
@@ -277,7 +290,7 @@ export class Executor {
     return code;
   }
 
-  private generateCode(selectorCode: string, plan: ActionPlan): string {
+  private generateCode(selectorCode: string, plan: ActionPlan, auxCode?: string): string {
     const val = plan.value ? `'${plan.value.replace(/'/g, "\\'")}'` : '';
     switch (plan.actionType) {
       case 'click':
@@ -313,7 +326,8 @@ export class Executor {
         return `await expect(page).toHaveURL(${val});`;
 
       case 'drag_and_drop':
-        return `await ${selectorCode}.dragTo(/* target2 selector */);`;
+        // 実際のターゲット2のコードを使用する
+        return `await ${selectorCode}.dragTo(${auxCode || '/* Unknown Target */'});`;
 
       default:
         return `await ${selectorCode}.${plan.actionType}(${val});`;
@@ -323,6 +337,8 @@ export class Executor {
   private async waitForStabilization(page: Page) {
     try {
       await page.waitForLoadState('domcontentloaded');
+      // SPA対応: 短い networkidle も待機
+      await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => {});
     } catch {
       // ignore error (timeout etc)
     }

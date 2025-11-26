@@ -60,6 +60,10 @@ export class Observer {
           return await this.scanFrame(frame);
         } catch {
           // クロスオリジンフレームなどでアクセス拒否された場合はスキップ
+          // デバッグ用にログを残す（実運用ではログレベルに応じて制御推奨）
+          if (process.env.DEBUG) {
+            console.debug('Skipped inaccessible frame:', frame.url());
+          }
           return null;
         }
       })

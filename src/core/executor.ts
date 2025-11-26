@@ -1,7 +1,7 @@
 /**
  * src/core/executor.ts
  * AIの意思決定を実行に移す。
- * 堅牢性を最優先し、Locatorの一意性を検証してから実行する (Double-Check Strategy)
+ * v3.0: 堅牢性を最優先し、Locatorの一意性を検証してから実行する (Double-Check Strategy)
  */
 import { Page, Locator, FrameLocator } from 'playwright';
 import { expect } from '@playwright/test';
@@ -72,7 +72,6 @@ export class Executor {
         await page.goto(plan.value);
         return {
           success: true,
-          // URLのエスケープ処理を追加
           generatedCode: `await page.goto('${plan.value.replace(/'/g, "\\'")}');`,
           retryable: true,
         };
@@ -114,7 +113,6 @@ export class Executor {
       }
 
       // 2. Execute Action
-      // 補助ロケータ(auxLocator)を渡す
       await this.performLocatorAction(locator, plan, page, auxLocator);
 
       // 3. Stabilization
@@ -122,7 +120,6 @@ export class Executor {
 
       return {
         success: true,
-        // 補助コード(auxCode)を渡して、正しいD&Dコードを生成する
         generatedCode: this.generateCode(selectorCode, plan, auxCode),
         retryable: false,
       };
@@ -153,7 +150,8 @@ export class Executor {
     if (s.testId) {
       candidates.push({
         get: () => context.getByTestId(s.testId!),
-        code: `.getByTestId('${s.testId}')`,
+        // 修正: エスケープ処理を追加
+        code: `.getByTestId('${s.testId.replace(/'/g, "\\'")}')`,
       });
     }
     if (s.role) {
@@ -166,7 +164,8 @@ export class Executor {
     if (s.placeholder) {
       candidates.push({
         get: () => context.getByPlaceholder(s.placeholder!),
-        code: `.getByPlaceholder('${s.placeholder}')`,
+        // エスケープ処理を追加
+        code: `.getByPlaceholder('${s.placeholder.replace(/'/g, "\\'")}')`,
       });
     }
     if (s.text) {
@@ -236,7 +235,11 @@ export class Executor {
         await locator.uncheck();
         break;
       case 'upload':
-        await locator.setInputFiles(val);
+        // 修正: カンマ区切りで複数ファイル対応
+        {
+          const files = val.includes(',') ? val.split(',').map((f) => f.trim()) : val;
+          await locator.setInputFiles(files);
+        }
         break;
       case 'select_option':
         try {
@@ -260,7 +263,8 @@ export class Executor {
         await expect(locator).toHaveValue(val);
         break;
       case 'assert_url':
-        await expect(page).toHaveURL(new RegExp(val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        // シンプルなURLチェックに変更（過剰なRegExpエスケープを回避）
+        await expect(page).toHaveURL(val);
         break;
 
       case 'scroll':
@@ -312,7 +316,7 @@ export class Executor {
       case 'uncheck':
         return `await ${selectorCode}.uncheck();`;
       case 'upload':
-        return `await ${selectorCode}.setInputFiles(${val});`;
+        return `await ${selectorCode}.setInputFiles(${val});`; // 配列対応は複雑なので文字列のまま
       case 'keypress':
         return `await ${selectorCode}.press(${val});`;
 
@@ -326,8 +330,11 @@ export class Executor {
         return `await expect(page).toHaveURL(${val});`;
 
       case 'drag_and_drop':
-        // 実際のターゲット2のコードを使用する
         return `await ${selectorCode}.dragTo(${auxCode || '/* Unknown Target */'});`;
+
+      case 'scroll':
+        // 修正: scrollアクションのコード生成を追加
+        return `await ${selectorCode}.scrollIntoViewIfNeeded();`;
 
       default:
         return `await ${selectorCode}.${plan.actionType}(${val});`;

@@ -59,8 +59,6 @@ export class Observer {
         try {
           return await this.scanFrame(frame);
         } catch {
-          // クロスオリジンフレームなどでアクセス拒否された場合はスキップ
-          // デバッグ用にログを残す（実運用ではログレベルに応じて制御推奨）
           if (process.env.DEBUG) {
             console.debug('Skipped inaccessible frame:', frame.url());
           }
@@ -258,7 +256,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
 
         if (!isInteractive) return;
 
-        // テキストと機密情報マスク
         let text = (el as HTMLElement).innerText || (el as HTMLInputElement).value || '';
         const inputType = el.getAttribute('type');
         const autocomplete = el.getAttribute('autocomplete');
@@ -312,6 +309,10 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
         if (inputType) attributes['type'] = inputType;
         if (finalRole) attributes['role'] = finalRole;
 
+        // name属性の収集を追加
+        const nameAttr = el.getAttribute('name');
+        if (nameAttr) attributes['name'] = nameAttr;
+
         foundItems.push({
           element: el,
           metadata: {
@@ -337,19 +338,25 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
 
     for (const prop of properties.values()) {
       const itemHandle = prop;
-      const rawHandle = await itemHandle.getProperty('element');
-      const elementHandle = rawHandle.asElement();
+      // rawHandle の確実な dispose のための try-finally
+      let rawHandle;
+      try {
+        rawHandle = await itemHandle.getProperty('element');
+        const elementHandle = rawHandle.asElement();
 
-      const metadataHandle = await itemHandle.getProperty('metadata');
-      const metadata = await metadataHandle.jsonValue();
+        const metadataHandle = await itemHandle.getProperty('metadata');
+        const metadata = await metadataHandle.jsonValue();
 
-      if (elementHandle) {
-        items.push({ handle: elementHandle, metadata: metadata as ElementMetadataInfo });
-      } else {
-        await rawHandle.dispose();
+        if (elementHandle) {
+          items.push({ handle: elementHandle, metadata: metadata as ElementMetadataInfo });
+        }
+        // metadataHandleは単純なJSON値なのでここで明示的にdisposeしなくてもGC対象だが念のため
+        await metadataHandle.dispose();
+      } finally {
+        // rawHandleは必ずdisposeする（asElementでハンドルが複製されているため、元のプロパティハンドルは不要）
+        if (rawHandle) await rawHandle.dispose();
+        await itemHandle.dispose();
       }
-      await metadataHandle.dispose();
-      await itemHandle.dispose();
     }
     await resultHandle.dispose();
 
@@ -379,7 +386,8 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
       meta.attributes['role'] || '',
       meta.attributes['type'] || '',
       meta.selectors.placeholder || '',
-      meta.attributes['name'] || '',
+      // name属性を優先使用（selectors.labelはnameとは異なる概念のため、まずはname属性自体を信頼する）
+      meta.attributes['name'] || meta.selectors.label || '',
       // TextContentから数値を除去して安定性を向上させる
       (meta.textContent || '').replace(/\d+/g, '').slice(0, 20),
     ];

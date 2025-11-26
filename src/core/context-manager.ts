@@ -14,6 +14,9 @@ export class ContextManager {
   private pendingDialogTimeout: NodeJS.Timeout | null = null;
   private readonly DIALOG_TIMEOUT_MS = 10000; // 10秒で自動処理
 
+  // イベントハンドラ参照（解除用）
+  private onPageHandler: (page: Page) => void;
+
   constructor(context: BrowserContext) {
     this.context = context;
     this.pages = context.pages();
@@ -22,14 +25,26 @@ export class ContextManager {
     // 初期ページのリスナー設定
     this.pages.forEach((p) => this.setupPageListeners(p));
 
-    // 新規ページの監視
-    this.context.on('page', (page) => {
+    // 新規ページの監視ハンドラ定義
+    this.onPageHandler = (page: Page) => {
       console.log('✨ New tab detected');
       this.pages.push(page);
       this.setupPageListeners(page);
-      // 新しいタブが開いたら自動的にアクティブにする（ユーザーの挙動に近い）
       this.activePage = page;
-    });
+    };
+
+    // イベント登録
+    this.context.on('page', this.onPageHandler);
+  }
+
+  /**
+   * リソースのクリーンアップ
+   */
+  dispose(): void {
+    if (this.pendingDialogTimeout) {
+      clearTimeout(this.pendingDialogTimeout);
+    }
+    this.context.off('page', this.onPageHandler);
   }
 
   /**
@@ -62,8 +77,8 @@ export class ContextManager {
 
       // セーフティネット: AIが処理しない場合、一定時間後に自動で閉じる
       this.pendingDialogTimeout = setTimeout(async () => {
-        // 既に処理済みであれば何もしない
-        if (!this.pendingDialog) return;
+        // 競合対策: 現在のダイアログが、タイムアウト設定時のダイアログと同一か確認
+        if (!this.pendingDialog || this.pendingDialog.dialog !== dialog) return;
 
         console.warn(
           '⚠️ Dialog handling timed out. Automatically dismissing/accepting to unblock execution...'

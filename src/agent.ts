@@ -46,7 +46,7 @@ export async function agent(page: Page, goal: string, options: AgentOptions = {}
     // FlashLoopの初期化 (ページインスタンスを渡す)
     const loop = new FlashLoop({
       page,
-      maxSteps: options.maxSteps ?? 15, // 0が指定された場合も許容するように ?? を使用
+      maxSteps: options.maxSteps ?? 15, // undefined/null の場合にデフォルト値15を使用
       logger: new ConsoleLogger(), // テスト出力に適したロガー
     });
 

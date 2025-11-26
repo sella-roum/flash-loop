@@ -5,6 +5,7 @@ import { Executor } from './executor';
 import { HistoryManager } from './history';
 import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
+import { DOM_WAIT_TIMEOUT_MS } from '../constants';
 
 export interface FlashLoopOptions {
   startUrl?: string;
@@ -122,7 +123,7 @@ export class FlashLoop {
           this.history.add(`ERROR: ${result.error}. Try a different approach.`);
 
           // エラー時は少し待機して画面安定化を待つ
-          await this.page.waitForTimeout(2000);
+          await this.page.waitForTimeout(DOM_WAIT_TIMEOUT_MS);
         }
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);

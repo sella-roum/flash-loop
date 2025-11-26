@@ -149,6 +149,13 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
       await page.evaluate(() => {
         return new Promise<void>((resolve) => {
           let timeout: ReturnType<typeof setTimeout>;
+
+          // 初期タイムアウト: 変更がない場合でも早期に解決
+          timeout = setTimeout(() => {
+            observer.disconnect();
+            resolve();
+          }, 200);
+
           const observer = new MutationObserver(() => {
             clearTimeout(timeout);
             timeout = setTimeout(() => {
@@ -314,10 +321,11 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         let text = (el as HTMLElement).innerText || (el as HTMLInputElement).value || '';
         // 機密情報のマスク
         const inputType = el.getAttribute('type');
+        const autocomplete = el.getAttribute('autocomplete');
         if (
           tagName === 'input' &&
-          inputType &&
-          ['password', 'email', 'tel', 'credit-card'].includes(inputType)
+          ((inputType && ['password'].includes(inputType)) ||
+            (autocomplete && autocomplete.startsWith('cc-')))
         ) {
           text = '[REDACTED]';
         }
@@ -359,7 +367,12 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         // 4. Role
         const role =
           el.getAttribute('role') ||
-          (['button', 'link', 'heading', 'checkbox', 'radio'].includes(tagName) ? tagName : null);
+          (['button', 'link', 'heading'].includes(tagName) ? tagName : null) ||
+          (tagName === 'input' && ['checkbox', 'radio'].includes(inputType || '')
+            ? inputType
+            : null) ||
+          (tagName === 'a' && el.hasAttribute('href') ? 'link' : null);
+
         if (role && (ariaLabel || cleanText)) {
           selectors.role = { role, name: ariaLabel || cleanText };
         }
@@ -402,7 +415,13 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
           handle: elementHandle,
           metadata: metadata as ElementMetadataInfo,
         });
+      } else {
+        // asElement()がnullの場合、ハンドルを破棄
+        await rawHandle.dispose();
       }
+      // itemHandle, metadataHandleは不要になったので破棄
+      await metadataHandle.dispose(); // jsonValue()ではハンドルは返らないが念のため確認: getProperty戻り値はJSHandleなので破棄
+      await itemHandle.dispose();
     }
 
     // ルートハンドルの破棄（メモリリーク対策）
@@ -432,7 +451,10 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
       if (el.classList.length > 0) return `iframe.${el.classList[0]}`;
       // src属性は変わる可能性が高いが、他になければ使う
       const src = el.getAttribute('src');
-      if (src) return `iframe[src*="${src.split('?')[0]}"]`; // クエリパラメータ除去
+      if (src) {
+        const cleanSrc = src.split('?')[0].replace(/["\\]/g, '\\$&');
+        return `iframe[src*="${cleanSrc}"]`;
+      }
       // 最終手段
       let ix = 1; // CSS selector is 1-based
       let sibling = el.previousElementSibling;

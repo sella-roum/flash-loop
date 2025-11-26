@@ -59,7 +59,10 @@ test('FlashLoop Auto-Generated Test', async ({ page }) => {
     try {
       await fs.writeFile(this.filePath, header, 'utf-8');
     } catch (error) {
-      throw new Error(`Failed to create test file at ${this.filePath}: ${error}`);
+      throw new Error(
+        `Failed to create test file at ${this.filePath}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
     }
   }
 

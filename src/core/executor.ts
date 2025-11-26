@@ -29,10 +29,17 @@ export class Executor {
       // --- Navigation / Page Actions ---
       if (plan.actionType === 'navigate') {
         if (!plan.value) throw new Error('Value is required for navigation');
+
+        // URLスキームの検証
+        const url = new URL(plan.value, page.url());
+        if (!['http:', 'https:'].includes(url.protocol)) {
+          throw new Error(`Unsupported URL scheme: ${url.protocol}`);
+        }
+
         await page.goto(plan.value);
         return {
           success: true,
-          generatedCode: `await page.goto('${plan.value}');`,
+          generatedCode: `await page.goto(${JSON.stringify(plan.value)});`,
           retryable: true,
         };
       }
@@ -345,6 +352,7 @@ export class Executor {
       // Playwrightの型定義にキャスト
       return context.getByRole(s.role.role as Parameters<Page['getByRole']>[0], {
         name: s.role.name,
+        exact: true,
       });
     }
     if (s.placeholder) {
@@ -376,14 +384,14 @@ export class Executor {
     if (s.testId) {
       selectorCode = `.getByTestId(${JSON.stringify(s.testId)})`;
     } else if (s.role) {
-      selectorCode = `.getByRole('${s.role.role}', { name: ${JSON.stringify(s.role.name)} })`;
+      selectorCode = `.getByRole(${JSON.stringify(s.role.role)}, { name: ${JSON.stringify(s.role.name)}, exact: true })`;
     } else if (s.placeholder) {
       selectorCode = `.getByPlaceholder(${JSON.stringify(s.placeholder)})`;
     } else if (s.text) {
       selectorCode = `.getByText(${JSON.stringify(s.text)})`;
     } else {
       // XPathフォールバック時は警告コメントを入れる
-      selectorCode = `.locator('${target.xpath}') /* Warning: Robust selector not found */`;
+      selectorCode = `.locator(${JSON.stringify(target.xpath)}) /* Warning: Robust selector not found */`;
     }
 
     // 3. アクション部分
@@ -440,8 +448,8 @@ export class Executor {
           const s2 = target2.selectors;
           if (s2.testId) sel2 = `.getByTestId(${JSON.stringify(s2.testId)})`;
           else if (s2.role)
-            sel2 = `.getByRole('${s2.role.role}', { name: ${JSON.stringify(s2.role.name)} })`;
-          else sel2 = `.locator('${target2.xpath}')`;
+            sel2 = `.getByRole(${JSON.stringify(s2.role.role)}, { name: ${JSON.stringify(s2.role.name)}, exact: true })`;
+          else sel2 = `.locator(${JSON.stringify(target2.xpath)})`;
 
           actionCode = `.dragTo(${base2}${sel2})`;
         } else {

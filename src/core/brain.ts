@@ -69,7 +69,7 @@ Next Action:
       return object;
     } catch (error) {
       console.error('LLM Generation Error:', error);
-      throw error;
+      throw new Error(`Failed to generate action plan for goal: "${goal}"`, { cause: error });
     }
   }
 }

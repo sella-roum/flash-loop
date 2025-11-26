@@ -26,6 +26,95 @@ interface ElementMetadataInfo {
   selectors: SelectorCandidates;
 }
 
+/**
+ * 有効なWAI-ARIAロールのホワイトリスト
+ * PlaywrightのgetByRoleでサポートされる主要なロールを含む
+ */
+const VALID_ARIA_ROLES = new Set([
+  'alert',
+  'alertdialog',
+  'application',
+  'article',
+  'banner',
+  'blockquote',
+  'button',
+  'caption',
+  'cell',
+  'checkbox',
+  'code',
+  'columnheader',
+  'combobox',
+  'complementary',
+  'contentinfo',
+  'definition',
+  'deletion',
+  'dialog',
+  'directory',
+  'document',
+  'emphasis',
+  'feed',
+  'figure',
+  'form',
+  'generic',
+  'grid',
+  'gridcell',
+  'group',
+  'heading',
+  'img',
+  'insertion',
+  'link',
+  'list',
+  'listbox',
+  'listitem',
+  'log',
+  'main',
+  'marquee',
+  'math',
+  'menu',
+  'menubar',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'meter',
+  'navigation',
+  'none',
+  'note',
+  'option',
+  'paragraph',
+  'presentation',
+  'progressbar',
+  'radio',
+  'radiogroup',
+  'region',
+  'row',
+  'rowgroup',
+  'rowheader',
+  'scrollbar',
+  'search',
+  'searchbox',
+  'separator',
+  'slider',
+  'spinbutton',
+  'status',
+  'strong',
+  'subscript',
+  'superscript',
+  'switch',
+  'tab',
+  'table',
+  'tablist',
+  'tabpanel',
+  'term',
+  'textbox',
+  'time',
+  'timer',
+  'toolbar',
+  'tooltip',
+  'tree',
+  'treegrid',
+  'treeitem',
+]);
+
 export class Observer {
   /**
    * 全フレームを走査し、インタラクティブな要素を抽出してYAMLとMapを生成する
@@ -53,7 +142,10 @@ export class Observer {
           return await this.scanFrame(frame);
         } catch (e) {
           // クロスオリジン制限などでアクセスできないフレームはスキップ
-          console.debug(`[Observer] Skipped frame: ${frame.url()}`, e);
+          // デバッグ時のみログ出力（本番では抑制）
+          if (process.env.DEBUG) {
+            console.debug(`[Observer] Skipped frame: ${frame.url()}`, e);
+          }
           return null;
         }
       })
@@ -215,12 +307,13 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
 
     // ブラウザ内でJSを実行し、Handleとメタデータのペアを取得
     // evaluateHandleを使うことで、DOM要素への参照(JSHandle)をNode.js側で維持する
-    const resultHandle = await frame.evaluateHandle(() => {
+    const resultHandle = await frame.evaluateHandle((validRoles) => {
       interface FoundItem {
         element: Element;
         metadata: ElementMetadataInfo;
       }
       const foundItems: FoundItem[] = [];
+      const validRoleSet = new Set(validRoles);
 
       // ビューポートのサイズ取得
       const viewportHeight = window.innerHeight;
@@ -368,8 +461,14 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         }
 
         // 4. Role
+        let rawRole = el.getAttribute('role');
+        // Validate against whitelist if raw role attribute exists
+        if (rawRole && !validRoleSet.has(rawRole)) {
+          rawRole = null;
+        }
+
         const role =
-          el.getAttribute('role') ||
+          rawRole ||
           (['button', 'link', 'heading'].includes(tagName) ? tagName : null) ||
           (tagName === 'input' && ['checkbox', 'radio'].includes(inputType || '')
             ? inputType
@@ -396,7 +495,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
 
       traverse(document);
       return foundItems;
-    });
+    }, Array.from(VALID_ARIA_ROLES));
 
     const properties = await resultHandle.getProperties();
     const items: Array<{

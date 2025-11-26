@@ -76,7 +76,7 @@ export class Executor {
         await expect(page).toHaveURL(url, { timeout: 5000 });
         return {
           success: true,
-          generatedCode: `await expect(page).toHaveURL('${url.replace(/'/g, "\\'")}');`,
+          generatedCode: `await expect(page).toHaveURL(${JSON.stringify(url)});`,
           retryable: false,
         };
       }
@@ -400,6 +400,14 @@ export class Executor {
 
     // 3. アクション部分
     const val = plan.value ? JSON.stringify(plan.value) : '';
+
+    // 特殊対応: select_option は runtime の fallback ロジックを再現するために構造を変える
+    if (plan.actionType === 'select_option') {
+      const selector = `${base}${selectorCode}`;
+      // labelで試行し、失敗したらvalueで試行するチェーン
+      return `await ${selector}.selectOption({ label: ${val} }).catch(() => ${selector}.selectOption({ value: ${val} }));`;
+    }
+
     let actionCode = '';
 
     switch (plan.actionType) {
@@ -433,9 +441,7 @@ export class Executor {
       case 'uncheck':
         actionCode = '.uncheck()';
         break;
-      case 'select_option':
-        actionCode = `.selectOption(${val})`;
-        break; // label or value
+      // select_option は上で処理済み
       case 'upload':
         actionCode = `.setInputFiles(${val})`;
         break;

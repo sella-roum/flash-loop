@@ -174,7 +174,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
 
     // --- ブラウザ内でのDOM解析 ---
     const resultHandle = await frame.evaluateHandle((validRoles) => {
-      // 戻り値の型定義
       interface FoundItem {
         element: Element;
         metadata: ElementMetadataInfo;
@@ -183,8 +182,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
       const validRoleSet = new Set(validRoles);
       const viewportHeight = window.innerHeight;
       const viewportWidth = window.innerWidth;
-
-      // --- Helper Functions ---
 
       function isVisibleStyle(el: Element): boolean {
         const style = window.getComputedStyle(el);
@@ -227,7 +224,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
         return '';
       }
 
-      // DOM探索 (Shadow DOM対応)
       function traverse(root: Document | ShadowRoot | Element) {
         const children = root.querySelectorAll('*');
         children.forEach((el) => {
@@ -281,11 +277,9 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
         const title = el.getAttribute('title');
         const alt = el.getAttribute('alt');
 
-        // LLMへの表示用記述
         const description =
           ariaLabel || placeholder || title || alt || cleanText || 'Unlabeled Element';
 
-        // Selectors候補の収集
         const selectors: SelectorCandidates = {};
         if (testId) selectors.testId = testId;
         if (placeholder) selectors.placeholder = placeholder;
@@ -294,7 +288,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
         if (title) selectors.title = title;
         if (alt) selectors.altText = alt;
 
-        // Roleの推論
         let finalRole = roleAttr;
         if (!finalRole) {
           if (tagName === 'button') finalRole = 'button';
@@ -309,7 +302,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
           selectors.role = { role: finalRole, name: ariaLabel || cleanText };
         }
 
-        // Semantic Hash用の属性収集
         const attributes: Record<string, string> = {};
         if (el.id) attributes['id'] = el.id;
         if (el.className) attributes['class'] = el.className;
@@ -336,7 +328,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
       return foundItems;
     }, VALID_ARIA_ROLES);
 
-    // Playwright JSHandle -> ElementHandle変換
     const properties = await resultHandle.getProperties();
     const items: Array<{ handle: ElementHandle; metadata: ElementMetadataInfo }> = [];
 
@@ -378,7 +369,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
   }
 
   private generateSemanticHash(meta: ElementMetadataInfo): string {
-    // ハッシュの種: 変更されにくい属性 + 役割 + 識別子
     const parts = [
       meta.tagName,
       meta.selectors.testId || '',
@@ -386,11 +376,10 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
       meta.attributes['type'] || '',
       meta.selectors.placeholder || '',
       meta.attributes['name'] || '',
-      // TextContentを含めるが、変わりやすいため短く制限
-      (meta.textContent || '').slice(0, 20),
+      // TextContentから数値を除去して安定性を向上させる
+      (meta.textContent || '').replace(/\d+/g, '').slice(0, 20),
     ];
 
-    // 簡易FNV-1a like hash
     let hash = 0x811c9dc5;
     const str = parts.join('|');
     for (let i = 0; i < str.length; i++) {

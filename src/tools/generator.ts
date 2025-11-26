@@ -45,8 +45,9 @@ test('FlashLoop Auto-Generated Test', async ({ page }) => {
     // thoughtがある場合は test.step でラップする
     let block = '';
     if (thought) {
-      // エスケープ処理（簡易）
-      const safeThought = thought.replace(/'/g, "\\'").replace(/\n/g, ' ');
+      // エスケープ処理: バックスラッシュを先にエスケープし、その後にシングルクォート等を処理
+      const safeThought = thought.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ');
+
       // インデント調整
       const indentedCode = code
         .split('\n')

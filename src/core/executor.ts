@@ -25,12 +25,20 @@ export class Executor {
       if (plan.actionType === 'switch_tab') {
         const target = plan.value || plan.targetId || '';
         if (!target) throw new Error('Switch tab requires a target (index or title).');
-        // 数値か文字列か判定
         const index = parseInt(target, 10);
         await contextManager.switchToTab(isNaN(index) ? target : index);
         return {
           success: true,
           generatedCode: `// Action: Switch tab to "${target}" (Context switching not recorded in test code yet)`,
+          retryable: false,
+        };
+      }
+
+      if (plan.actionType === 'close_tab') {
+        await contextManager.closeActiveTab();
+        return {
+          success: true,
+          generatedCode: `await page.close();`,
           retryable: false,
         };
       }
@@ -50,7 +58,6 @@ export class Executor {
       }
 
       if (plan.actionType === 'handle_dialog') {
-        // ダイアログ処理 (ContextManager経由)
         const action = plan.value === 'accept' ? 'accept' : 'dismiss';
         await contextManager.handleDialog(action);
         return {
@@ -61,12 +68,23 @@ export class Executor {
       }
 
       if (plan.actionType === 'navigate') {
-        await page.goto(plan.value!);
+        if (!plan.value) throw new Error('navigate action requires a URL in value.');
+        await page.goto(plan.value);
         return {
           success: true,
           generatedCode: `await page.goto('${plan.value}');`,
           retryable: true,
         };
+      }
+
+      if (plan.actionType === 'reload') {
+        await page.reload();
+        return { success: true, generatedCode: 'await page.reload();', retryable: true };
+      }
+
+      if (plan.actionType === 'go_back') {
+        await page.goBack();
+        return { success: true, generatedCode: 'await page.goBack();', retryable: true };
       }
 
       if (plan.isFinished || plan.actionType === 'finish') {
@@ -78,15 +96,13 @@ export class Executor {
       const target = elementMap.get(plan.targetId);
       if (!target) throw new Error(`Element with ID "${plan.targetId}" not found in memory.`);
 
-      // 1. Double-Check: 最適なLocatorを計算し、一意性を検証する
+      // 1. Double-Check
       const { locator, code: selectorCode } = await this.getRobustLocator(target, page);
 
-      // 2. Execute Action using the VERIFIED locator
-      // これにより「動くコード」でのみ実行されることが保証される
+      // 2. Execute Action
       await this.performLocatorAction(locator, plan, elementMap, page);
 
-      // 3. Stabilization (Smart Wait)
-      // アクション後、スピナー等が消えるのを待つなどの汎用待機を入れる
+      // 3. Stabilization
       await this.waitForStabilization(page);
 
       return {
@@ -95,11 +111,10 @@ export class Executor {
         retryable: false,
       };
     } catch (error) {
-      // エラー翻訳
       const translatedError = ErrorTranslator.translate(error);
       return {
         success: false,
-        error: translatedError, // AIには翻訳されたエラーを返す
+        error: translatedError,
         userGuidance: translatedError,
         retryable: true,
       };
@@ -108,7 +123,6 @@ export class Executor {
 
   /**
    * ElementContainerから「現在動作する」最適なLocatorを生成・検証する
-   * Double-Check Strategy の核となるメソッド
    */
   private async getRobustLocator(
     target: ElementContainer,
@@ -120,7 +134,6 @@ export class Executor {
     const s = target.selectors;
     const candidates: Array<{ get: () => Locator; code: string }> = [];
 
-    // 候補リスト作成 (優先度順)
     if (s.testId) {
       candidates.push({
         get: () => context.getByTestId(s.testId!),
@@ -128,7 +141,6 @@ export class Executor {
       });
     }
     if (s.role) {
-      // TypeScriptキャスト修正: Playwrightの型定義を使用
       const role = s.role!.role as Parameters<Page['getByRole']>[0];
       candidates.push({
         get: () => context.getByRole(role, { name: s.role!.name, exact: true }),
@@ -147,27 +159,23 @@ export class Executor {
         code: `.getByText('${s.text!.replace(/'/g, "\\'")}', { exact: true })`,
       });
     }
-    // XPath (Fallback)
+    // XPath
     candidates.push({
       get: () => context.locator(target.xpath),
       code: `.locator('${target.xpath.replace(/'/g, "\\'")}')`,
     });
 
-    // 検証ループ (Dry Run Verification)
     for (const cand of candidates) {
       try {
         const loc = cand.get();
-        // 要素がDOMに存在し、かつ一意であることを確認
-        // isVisible() もチェックすることで「見えない要素」を誤操作するリスクを減らす
         if ((await loc.count()) === 1 && (await loc.isVisible())) {
           return { locator: loc, code: `${contextCode}${cand.code}` };
         }
       } catch {
-        // 無視して次の候補へ
+        // next candidate
       }
     }
 
-    // 全滅した場合の最終手段
     throw new Error(
       'Failed to generate a robust selector for this element. It might be hidden or dynamic.'
     );
@@ -176,8 +184,8 @@ export class Executor {
   private async performLocatorAction(
     locator: Locator,
     plan: ActionPlan,
-    _elementMap: Map<string, ElementContainer>, // 未使用変数を_付きに変更
-    _page: Page // 未使用変数を_付きに変更
+    elementMap: Map<string, ElementContainer>,
+    page: Page
   ) {
     const val = plan.value || '';
     switch (plan.actionType) {
@@ -187,8 +195,17 @@ export class Executor {
       case 'dblclick':
         await locator.dblclick();
         break;
+      case 'right_click':
+        await locator.click({ button: 'right' });
+        break;
       case 'hover':
         await locator.hover();
+        break;
+      case 'focus':
+        await locator.focus();
+        break;
+      case 'clear':
+        await locator.clear();
         break;
       case 'fill':
         await locator.fill(val);
@@ -202,6 +219,9 @@ export class Executor {
       case 'uncheck':
         await locator.uncheck();
         break;
+      case 'upload':
+        await locator.setInputFiles(val);
+        break;
       case 'select_option':
         try {
           await locator.selectOption({ label: val });
@@ -212,16 +232,34 @@ export class Executor {
       case 'keypress':
         await locator.press(val);
         break;
+
+      // Assertions
       case 'assert_visible':
         await expect(locator).toBeVisible();
         break;
       case 'assert_text':
         await expect(locator).toContainText(val);
         break;
+      case 'assert_value':
+        await expect(locator).toHaveValue(val);
+        break;
+      case 'assert_url':
+        await expect(page).toHaveURL(new RegExp(val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        break;
+
       case 'scroll':
         await locator.scrollIntoViewIfNeeded();
         break;
-      // 必要に応じてドラッグアンドドロップなどを実装する場合ここで _elementMap を使う
+
+      case 'drag_and_drop': {
+        if (!plan.targetId2) throw new Error('Drag and drop requires targetId2');
+        const target2 = elementMap.get(plan.targetId2);
+        if (!target2) throw new Error(`Target 2 (ID: ${plan.targetId2}) not found`);
+        const result2 = await this.getRobustLocator(target2, page);
+        await locator.dragTo(result2.locator);
+        break;
+      }
+
       default:
         throw new Error(`Unsupported action: ${plan.actionType}`);
     }
@@ -244,12 +282,39 @@ export class Executor {
     switch (plan.actionType) {
       case 'click':
         return `await ${selectorCode}.click();`;
+      case 'dblclick':
+        return `await ${selectorCode}.dblclick();`;
+      case 'right_click':
+        return `await ${selectorCode}.click({ button: 'right' });`;
+      case 'hover':
+        return `await ${selectorCode}.hover();`;
       case 'fill':
         return `await ${selectorCode}.fill(${val});`;
+      case 'type':
+        return `await ${selectorCode}.pressSequentially(${val});`;
+      case 'clear':
+        return `await ${selectorCode}.clear();`;
+      case 'check':
+        return `await ${selectorCode}.check();`;
+      case 'uncheck':
+        return `await ${selectorCode}.uncheck();`;
+      case 'upload':
+        return `await ${selectorCode}.setInputFiles(${val});`;
+      case 'keypress':
+        return `await ${selectorCode}.press(${val});`;
+
       case 'assert_visible':
         return `await expect(${selectorCode}).toBeVisible();`;
       case 'assert_text':
         return `await expect(${selectorCode}).toContainText(${val});`;
+      case 'assert_value':
+        return `await expect(${selectorCode}).toHaveValue(${val});`;
+      case 'assert_url':
+        return `await expect(page).toHaveURL(${val});`;
+
+      case 'drag_and_drop':
+        return `await ${selectorCode}.dragTo(/* target2 selector */);`;
+
       default:
         return `await ${selectorCode}.${plan.actionType}(${val});`;
     }

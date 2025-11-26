@@ -54,7 +54,8 @@ Advice:
     }
 
     // Fallback
-    return `Unknown Execution Error: ${msg.slice(0, 200)}...
+    const cleanMsg = msg.length > 200 ? msg.slice(0, 200) + '...' : msg;
+    return `Unknown Execution Error: ${cleanMsg}
 Advice: Try a different approach or verify the target element.`;
   }
 }

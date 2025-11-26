@@ -8,7 +8,11 @@ export class ContextManager {
   private context: BrowserContext;
   private pages: Page[] = [];
   private activePage: Page | null = null;
+
+  // ダイアログ管理用
   private pendingDialog: { message: string; type: string; dialog: Dialog } | null = null;
+  private pendingDialogTimeout: NodeJS.Timeout | null = null;
+  private readonly DIALOG_TIMEOUT_MS = 10000; // 10秒で自動処理
 
   constructor(context: BrowserContext) {
     this.context = context;
@@ -44,14 +48,36 @@ export class ContextManager {
     // ダイアログ監視
     page.on('dialog', (dialog) => {
       console.log(`💬 Dialog detected: [${dialog.type()}] ${dialog.message()}`);
+
+      // 既存のタイムアウトがあればクリア
+      if (this.pendingDialogTimeout) {
+        clearTimeout(this.pendingDialogTimeout);
+      }
+
       this.pendingDialog = {
         message: dialog.message(),
         type: dialog.type(),
         dialog: dialog,
       };
-      // 自動で閉じない。AIに判断させるため保留する。
-      // ただし、beforeunloadなどはブロックする可能性があるので注意が必要だが、
-      // ここではAI操作のループ内で処理することを前提とする。
+
+      // セーフティネット: AIが処理しない場合、一定時間後に自動で閉じる
+      this.pendingDialogTimeout = setTimeout(async () => {
+        console.warn(
+          '⚠️ Dialog handling timed out. Automatically dismissing/accepting to unblock execution...'
+        );
+        try {
+          if (dialog.type() === 'beforeunload') {
+            await dialog.accept();
+          } else {
+            await dialog.dismiss();
+          }
+        } catch (e) {
+          console.error('Failed to auto-handle dialog:', e);
+        } finally {
+          this.pendingDialog = null;
+          this.pendingDialogTimeout = null;
+        }
+      }, this.DIALOG_TIMEOUT_MS);
     });
   }
 
@@ -131,6 +157,13 @@ export class ContextManager {
     if (!this.pendingDialog) {
       throw new Error('No active dialog to handle.');
     }
+
+    // AIが処理したのでタイマーを解除
+    if (this.pendingDialogTimeout) {
+      clearTimeout(this.pendingDialogTimeout);
+      this.pendingDialogTimeout = null;
+    }
+
     try {
       if (action === 'accept') {
         await this.pendingDialog.dialog.accept(promptText);

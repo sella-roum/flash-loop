@@ -30,9 +30,7 @@ Return a JSON object matching ActionSchema.
 
     const userContent = `
 Goal: ${goal}
-
-${lastError ? `⚠️ PREVIOUS ERROR:\n${lastError}\n(Please fix your strategy based on this error.)\n` : ''}
-
+${lastError ? `\n⚠️ PREVIOUS ERROR:\n${lastError}\n(Please fix your strategy based on this error.)\n` : ''}
 Current State:
 ${state}
 

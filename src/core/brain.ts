@@ -11,19 +11,32 @@ export class Brain {
 
   /**
    * 現在の状態と履歴から、次のアクションを推論します。
+   *
+   * @param goal ユーザーのゴール
+   * @param state 現在のページ状態（YAML形式）
+   * @param history 過去のアクション履歴
    */
   async think(goal: string, state: string, history: string[]): Promise<ActionPlan> {
     const systemPrompt = `
-You are FlashLoop, an expert automated browser agent focused on speed and reliability.
+You are FlashLoop, an expert automated browser agent.
 Your goal is to achieve the user's objective on the web page.
 
 # INSTRUCTIONS
-1. Analyze the 'Current State' and 'Interactive Elements'.
+1. Analyze the 'Current State' (YAML format) and 'Goal'.
 2. Determine the next single step to take.
-3. ALWAYS use the 'targetId' from the list (e.g., "[ID: 12]") to specify elements. DO NOT guess CSS selectors.
-4. If you need to click something, select the correct ID.
-5. If the goal is achieved, set 'isFinished' to true.
-6. If an error occurred in history, try a different element or approach.
+3. **Format**: The state uses the format '- <tag> "Description" [ID: x]'.
+4. **Target**: Use the [ID: x] to specify the 'targetId'.
+5. **Scrolling**: If the target is not visible but you see a hint like "Scrollable" or "more items", use actionType: "scroll". If scrolling a specific container, use its ID. If general scrolling, leave targetId empty.
+6. **Input**: For 'fill' or 'type', specify the text in 'value'.
+7. **Completion**: If the goal is fully achieved, set 'isFinished' to true.
+
+# ACTION TYPES
+- Basic: click, dblclick, right_click, hover, focus
+- Input: fill, type, clear, check, uncheck, select_option, upload
+- Advanced: drag_and_drop, keypress
+- Page: navigate, scroll, go_back, reload
+- Verify: assert_visible, assert_text, assert_value, assert_url
+- Meta: finish
 
 # OUTPUT FORMAT
 Return a JSON object matching the ActionSchema.
@@ -40,10 +53,10 @@ Return a JSON object matching the ActionSchema.
             content: `
 Goal: ${goal}
 
-Current State:
+Current State (Interactive Elements):
 ${state}
 
-History of Actions & Errors:
+History of Actions:
 ${history.length > 0 ? history.join('\n') : '(No history yet)'}
 
 Next Action:
@@ -56,7 +69,7 @@ Next Action:
       return object;
     } catch (error) {
       console.error('LLM Generation Error:', error);
-      throw error;
+      throw new Error(`Failed to generate action plan for goal: "${goal}"`, { cause: error });
     }
   }
 }

@@ -4,18 +4,33 @@
  */
 export class HistoryManager {
   private logs: string[] = [];
-  private readonly MAX_LOGS = 15;
+  private readonly MAX_LOGS = 20; // 履歴保持数を少し増やす
 
-  add(message: string) {
+  /**
+   * 履歴を追加する
+   * @param message アクションの結果やエラーメッセージ
+   */
+  add(message: string): void {
     this.logs.push(message);
-    // 履歴が長すぎる場合は古いものを削除（単純なFIFO）
+
+    // 履歴が長すぎる場合は古いものを削除（FIFO）
     if (this.logs.length > this.MAX_LOGS) {
       this.logs.shift();
     }
   }
 
+  /**
+   * 現在の履歴リストを取得する
+   */
   getHistory(): string[] {
     // 内部配列のコピーを返して破壊を防ぐ
     return [...this.logs];
+  }
+
+  /**
+   * 履歴をクリアする（リセット用）
+   */
+  clear(): void {
+    this.logs = [];
   }
 }

@@ -19,12 +19,10 @@ export interface AgentOptions {
  * @param options オプション（最大ステップ数など）
  * @returns 生成されたPlaywrightコード
  */
-export async function agent(page: Page, goal: string, options: AgentOptions = {}) {
-  // 1. CIガード: 環境変数で許可されていない限り、CIでの実行をスキップ
-  // CI環境変数は多くのCIサービスで true に設定されています
+export async function agent(page: Page, goal: string, options: AgentOptions = {}): Promise<string> {
+  // 1. CIガード
   if (process.env.CI && !process.env.ALLOW_AI_IN_CI) {
-    const msg = `⚠️ [Flash-Loop] Skipped in CI environment: "${goal}"`;
-    console.log(msg);
+    console.log(`⚠️ [Flash-Loop] Skipped in CI environment: "${goal}"`);
 
     // Playwrightレポートにスキップ情報を記録
     test.info().annotations.push({
@@ -37,9 +35,7 @@ export async function agent(page: Page, goal: string, options: AgentOptions = {}
 
   // 2. Playwright Step として実行
   return await test.step(`🤖 AI Agent: ${goal}`, async () => {
-    // 3. タイムアウト延長 (AIは時間がかかるため、最低2分(120,000ms)を確保)
-    // 以前の `test.info().timeout + 90000` は累積の問題があったため修正
-    // 現在のタイムアウト設定が120秒未満の場合のみ、120秒に延長する
+    // 3. タイムアウト延長 (AIは時間がかかるため)
     const currentTimeout = test.info().timeout;
     const MIN_AI_TIMEOUT = 120000;
 
@@ -47,11 +43,11 @@ export async function agent(page: Page, goal: string, options: AgentOptions = {}
       test.setTimeout(MIN_AI_TIMEOUT);
     }
 
-    // テスト実行用の設定でFlashLoopを初期化
+    // FlashLoopの初期化 (ページインスタンスを渡す)
     const loop = new FlashLoop({
       page,
-      maxSteps: options.maxSteps || 15,
-      logger: new ConsoleLogger(), // テスト出力に適したロガーを使用
+      maxSteps: options.maxSteps ?? 15, // undefined/null の場合にデフォルト値15を使用
+      logger: new ConsoleLogger(), // テスト出力に適したロガー
     });
 
     try {
@@ -64,7 +60,6 @@ export async function agent(page: Page, goal: string, options: AgentOptions = {}
         contentType: 'text/typescript',
       });
 
-      // コンソールにも出力 (開発者がコピペしやすいように)
       console.log(`\n--- 🤖 AI Generated Code for "${goal}" ---`);
       console.log(generatedCode);
       console.log('------------------------------------------\n');
@@ -72,11 +67,10 @@ export async function agent(page: Page, goal: string, options: AgentOptions = {}
       return generatedCode;
     } catch (error) {
       console.error('AI Agent Error:', error);
-      // エラーを再スローしてテストを失敗させる
       throw error;
     } finally {
-      // 6. DOMクリーンアップ (必須)
-      // 途中でエラーになっても、注入したIDが残らないようにする
+      // クリーンアップはIn-Memory方式になったため基本不要だが、
+      // 将来的な拡張のために呼び出しておく
       await loop.cleanup();
     }
   });

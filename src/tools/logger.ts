@@ -58,6 +58,7 @@ export class SpinnerLogger implements ILogger {
   }
 
   action(type: string, target: string): void {
+    const wasSpinning = this.spinner.isSpinning;
     const icon = chalk.yellow('➤');
     // スピナーのテキスト更新ではなく、履歴として残すログ
     this.spinner.stopAndPersist({
@@ -65,16 +66,21 @@ export class SpinnerLogger implements ILogger {
       text: `Action: ${chalk.bold(type)} on [${target}]`,
     });
     // 再開
-    this.spinner.start();
+    if (wasSpinning) {
+      this.spinner.start();
+    }
   }
 
   thought(text: string): void {
+    const wasSpinning = this.spinner.isSpinning;
     const icon = chalk.gray('💭');
     this.spinner.stopAndPersist({
       symbol: icon,
       text: chalk.gray(`Thought: ${text}`),
     });
-    this.spinner.start();
+    if (wasSpinning) {
+      this.spinner.start();
+    }
   }
 }
 
@@ -101,11 +107,11 @@ export class ConsoleLogger implements ILogger {
   }
 
   fail(msg: string): void {
-    console.error(`❌ ${msg}`);
+    console.error(`[FAIL] ❌ ${msg}`);
   }
 
   error(msg: string): void {
-    console.error(`❌ ${msg}`);
+    console.error(`[ERROR] ❌ ${msg}`);
   }
 
   action(type: string, target: string): void {

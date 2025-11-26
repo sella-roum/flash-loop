@@ -1,7 +1,3 @@
-/**
- * src/core/loop.ts
- * AIエージェントのメインループ (Observe-Think-Act)
- */
 import { chromium, Browser, Page } from 'playwright';
 import { Brain } from './brain';
 import { Observer } from './observer';
@@ -9,11 +5,14 @@ import { Executor } from './executor';
 import { HistoryManager } from './history';
 import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
+import { DOM_WAIT_TIMEOUT_MS } from '../constants';
+import { ElementContainer } from '../types';
 
 export interface FlashLoopOptions {
   startUrl?: string;
   headless?: boolean;
   maxSteps?: number;
+  viewport?: { width: number; height: number }; // ビューポート設定を追加
   // 以下、ライブラリ利用時のオプション
   page?: Page; // 既存のPageインスタンス
   logger?: ILogger; // 外部から注入するロガー
@@ -21,10 +20,6 @@ export interface FlashLoopOptions {
 
 export class FlashLoop {
   private browser: Browser | null = null;
-  // 初期化をコンストラクタで保証するため、! を外すことも可能だが
-  // start()まではundefinedの可能性があるため、設計上このままにするか、
-  // あるいは型定義を Page | undefined にする。
-  // ここでは外部注入された場合は必ず存在するため、 ! を使用。
   private page!: Page;
 
   private brain: Brain;
@@ -33,6 +28,9 @@ export class FlashLoop {
   private history: HistoryManager;
   private generator: IGenerator;
   private logger: ILogger;
+
+  // メモリリーク対策: アクティブな要素マップを保持し、適宜クリーンアップする
+  private activeElementMap: Map<string, ElementContainer> = new Map();
 
   private options: FlashLoopOptions;
   private isExternalPage: boolean;
@@ -68,15 +66,15 @@ export class FlashLoop {
 
     // 外部ページでない場合のみ、ここでブラウザを起動する
     if (!this.isExternalPage) {
-      this.browser = await chromium.launch({ headless: this.options.headless ?? false });
+      this.browser = await chromium.launch({
+        headless: this.options.headless ?? false,
+      });
       this.page = await this.browser.newPage();
-      await this.page.setViewportSize({ width: 1280, height: 800 });
+      const viewport = this.options.viewport ?? { width: 1280, height: 800 };
+      await this.page.setViewportSize(viewport);
     }
 
     if (this.options.startUrl) {
-      // this.logger が SpinnerLogger の場合のみ text プロパティ更新が可能だが、
-      // ILogger インターフェースには text プロパティがないため、メソッド経由か型キャストが必要。
-      // ここでは汎用的に start() を再呼び出しする形で通知する。
       this.logger.start(`Navigating to ${this.options.startUrl}...`);
       await this.page.goto(this.options.startUrl);
     }
@@ -95,11 +93,15 @@ export class FlashLoop {
       this.logger.start(`Step ${stepCount}: Observing...`);
 
       try {
-        // 1. Observe (Virtual ID Injection)
-        const stateText = await this.observer.captureState(this.page);
+        // 前回のステップで使用したElementHandleを破棄してメモリ解放
+        await this.clearActiveElements();
+
+        // 1. Observe (DOM汚染なし、全フレーム走査)
+        const { stateText, elementMap } = await this.observer.captureState(this.page);
+        this.activeElementMap = elementMap; // 新しいマップを保持
 
         // 2. Think
-        this.logger.start('Thinking...'); // Spinnerの状態更新
+        this.logger.start('Thinking...');
         const plan = await this.brain.think(goal, stateText, this.history.getHistory());
 
         if (plan.isFinished) {
@@ -109,11 +111,12 @@ export class FlashLoop {
 
         this.logger.action(plan.actionType, plan.targetId || 'page');
 
-        // 3. Execute & Reverse Engineer
-        const result = await this.executor.execute(plan, this.page);
+        // 3. Execute (Handle操作 -> Code生成)
+        // マップを渡すことで、DOM再探索をスキップ
+        const result = await this.executor.execute(plan, this.page, this.activeElementMap);
 
         if (result.success) {
-          this.logger.stop(); // 一旦止める
+          this.logger.stop(); // スピナー停止
           this.logger.success(`Action Success: ${plan.thought}`);
 
           if (result.generatedCode) {
@@ -126,18 +129,18 @@ export class FlashLoop {
           this.logger.fail(`Action Failed: ${result.error}`);
           this.history.add(`ERROR: ${result.error}. Try a different approach.`);
 
-          // エラー時は少し待機
-          await this.page.waitForTimeout(2000);
+          // エラー時は少し待機して画面安定化を待つ
+          await this.page.waitForTimeout(DOM_WAIT_TIMEOUT_MS);
         }
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.logger.fail(`System Error: ${errorMessage}`);
-        // システムエラーの場合はループを抜けるべきか、リトライすべきか判断が必要だが、
-        // ここでは安全のためループを抜ける
+        // システムエラーの場合は安全のためループを抜ける
         break;
       }
     }
 
+    await this.cleanup();
     await this.generator.finish();
 
     // CLIモードの場合のみブラウザを閉じる
@@ -154,11 +157,25 @@ export class FlashLoop {
   }
 
   /**
-   * DOMから注入した属性をクリーンアップします（ライブラリモード用）
+   * クリーンアップ処理
+   * 保持しているElementHandleを破棄する
    */
   async cleanup(): Promise<void> {
-    if (this.page) {
-      await this.observer.cleanup(this.page);
+    await this.clearActiveElements();
+  }
+
+  /**
+   * activeElementMap内のElementHandleを全て破棄し、マップをクリアする
+   */
+  private async clearActiveElements(): Promise<void> {
+    for (const container of this.activeElementMap.values()) {
+      try {
+        // ElementHandleを明示的に破棄してブラウザ側のメモリを解放
+        await container.handle.dispose();
+      } catch {
+        // すでに破棄されている場合などは無視
+      }
     }
+    this.activeElementMap.clear();
   }
 }

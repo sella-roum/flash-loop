@@ -39,7 +39,7 @@ program
 
     // CLI実行用のロガーを作成
     const logger = new SpinnerLogger();
-    console.log(chalk.cyan('⚡ Starting Flash-Loop v2.1...'));
+    console.log(chalk.cyan('⚡ Starting Flash-Loop...'));
 
     try {
       const agent = new FlashLoop({

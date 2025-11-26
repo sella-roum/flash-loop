@@ -1,21 +1,12 @@
+/**
+ * src/core/observer.ts
+ * DOMの状態を観測し、永続的なIDを割り振る
+ */
 import { Page, Frame, ElementHandle } from 'playwright';
-import { ObservationResult, ElementContainer } from '../types';
+import { ObservationResult, ElementContainer, SelectorCandidates } from '../types';
 import { DOM_WAIT_TIMEOUT_MS } from '../constants';
 
-/**
- * セレクタ候補の型定義
- */
-interface SelectorCandidates {
-  testId?: string;
-  placeholder?: string;
-  text?: string;
-  role?: { role: string; name: string };
-  label?: string;
-}
-
-/**
- * ブラウザ内JSから返却されるメタデータの型定義
- */
+// ブラウザ内で生成・返却されるメタデータの型定義
 interface ElementMetadataInfo {
   xpath: string;
   tagName: string;
@@ -24,306 +15,177 @@ interface ElementMetadataInfo {
   isScrollable: boolean;
   isInViewport: boolean;
   selectors: SelectorCandidates;
+  // Semantic ID 生成用
+  attributes: Record<string, string>;
+  textContent: string;
 }
 
-/**
- * 有効なWAI-ARIAロールのホワイトリスト
- * PlaywrightのgetByRoleでサポートされる主要なロールを含む
- */
-const VALID_ARIA_ROLES = new Set([
-  'alert',
-  'alertdialog',
-  'application',
-  'article',
-  'banner',
-  'blockquote',
+// 検出対象とするARIAロール
+const VALID_ARIA_ROLES = [
   'button',
-  'caption',
-  'cell',
   'checkbox',
-  'code',
-  'columnheader',
   'combobox',
-  'complementary',
-  'contentinfo',
-  'definition',
-  'deletion',
-  'dialog',
-  'directory',
-  'document',
-  'emphasis',
-  'feed',
-  'figure',
-  'form',
-  'generic',
-  'grid',
-  'gridcell',
-  'group',
-  'heading',
-  'img',
-  'insertion',
   'link',
-  'list',
-  'listbox',
-  'listitem',
-  'log',
-  'main',
-  'marquee',
-  'math',
-  'menu',
-  'menubar',
   'menuitem',
-  'menuitemcheckbox',
-  'menuitemradio',
-  'meter',
-  'navigation',
-  'none',
-  'note',
   'option',
-  'paragraph',
-  'presentation',
-  'progressbar',
   'radio',
-  'radiogroup',
-  'region',
-  'row',
-  'rowgroup',
-  'rowheader',
-  'scrollbar',
-  'search',
-  'searchbox',
-  'separator',
   'slider',
   'spinbutton',
-  'status',
-  'strong',
-  'subscript',
-  'superscript',
   'switch',
   'tab',
-  'table',
-  'tablist',
-  'tabpanel',
-  'term',
   'textbox',
-  'time',
-  'timer',
-  'toolbar',
-  'tooltip',
-  'tree',
-  'treegrid',
   'treeitem',
-]);
+  'gridcell',
+  'heading',
+];
 
 export class Observer {
+  // 永続化された要素マップ (Semantic Hash -> Container)
+  private persistentElementMap: Map<string, ElementContainer> = new Map();
+
   /**
-   * 全フレームを走査し、インタラクティブな要素を抽出してYAMLとMapを生成する
-   * DOMへの属性注入(data-flash-id)は行わず、メモリ上で管理する
-   *
-   * @param page Playwright Page object
+   * 現在のページ状態をキャプチャし、永続マップを更新して返す
    */
   async captureState(page: Page): Promise<ObservationResult> {
-    // 1. Smart Wait: DOMとネットワークの安定化を待機
     await this.waitForStability(page);
 
-    const elementMap = new Map<string, ElementContainer>();
+    const currentScanIds = new Set<string>();
     const yamlLines: string[] = [];
-    let globalIdCounter = 1;
-    let hiddenItemCount = 0; // 画面外の要素数カウント用
+    let hiddenItemCount = 0;
 
-    // 2. 全フレームを並列走査
-    // メインフレームとすべてのiframeを取得
     const frames = page.frames();
-
-    // 各フレームの走査結果を集約
     const frameResults = await Promise.all(
       frames.map(async (frame) => {
         try {
           return await this.scanFrame(frame);
-        } catch (e) {
-          // クロスオリジン制限などでアクセスできないフレームはスキップ
-          // デバッグ時のみログ出力（本番では抑制）
-          if (process.env.DEBUG) {
-            console.debug(`[Observer] Skipped frame: ${frame.url()}`, e);
-          }
+        } catch {
+          // クロスオリジンフレームなどでアクセス拒否された場合はスキップ
           return null;
         }
       })
     );
 
-    // 3. 結果の統合とフォーマット
+    // 同じハッシュ値が出現した場合のカウンタ (ページ内で一意にするため)
+    const hashCounter = new Map<string, number>();
+
     for (const result of frameResults) {
       if (!result) continue;
       const { frame, frameSelectorChain, items } = result;
 
       for (const item of items) {
-        const id = String(globalIdCounter++);
+        // Semantic Hash の生成
+        const rawHash = this.generateSemanticHash(item.metadata);
 
-        // コンテナ作成 (メモリ保持は全要素行う)
-        elementMap.set(id, {
+        // 衝突回避 (nth-occurrence)
+        const count = (hashCounter.get(rawHash) || 0) + 1;
+        hashCounter.set(rawHash, count);
+
+        // ID形式: "tag-hash-index" (例: button-a1b2-1)
+        const id = `${item.metadata.tagName}-${rawHash}-${count}`;
+        currentScanIds.add(id);
+
+        const container: ElementContainer = {
           id,
           handle: item.handle,
           frame,
-          frameSelectorChain, // チェーンとして保存
+          frameSelectorChain,
           xpath: item.metadata.xpath,
           selectors: item.metadata.selectors,
           description: item.metadata.description,
           tagName: item.metadata.tagName,
           isScrollable: item.metadata.isScrollable,
-        });
+          isInViewport: item.metadata.isInViewport,
+        };
 
-        // YAML生成 (LLM用)
-        // ビューポート内の要素のみ詳細を出力する
+        // マップ更新（常に最新のハンドルで上書き）
+        this.persistentElementMap.set(id, container);
+
+        // YAML生成 (Viewport内のみ)
         if (item.metadata.isInViewport) {
           let line = `- ${item.metadata.tagName}`;
+          if (item.metadata.inputType) line += `[type="${item.metadata.inputType}"]`;
 
-          // input typeなどの重要属性は付記してAIの判断を助ける
-          if (item.metadata.inputType) {
-            line += `[type="${item.metadata.inputType}"]`;
-          }
+          // 可読性のため description は短く
+          const desc = item.metadata.description.replace(/\n/g, ' ').slice(0, 60);
+          line += ` "${desc}" [ID: ${id}]`;
 
-          // 簡潔な説明とID
-          line += ` "${item.metadata.description}" [ID: ${id}]`;
+          const extra: string[] = [];
+          if (item.metadata.isScrollable) extra.push('Scrollable');
+          if (frameSelectorChain.length > 0) extra.push('in Iframe');
 
-          const extraInfo: string[] = [];
-          if (item.metadata.isScrollable) extraInfo.push('Scrollable');
-          // チェーンがある場合は iframe 内と明示
-          if (frameSelectorChain.length > 0) extraInfo.push('in Iframe');
-
-          if (extraInfo.length > 0) {
-            line += ` (${extraInfo.join(', ')})`;
-          }
-
+          if (extra.length > 0) line += ` (${extra.join(', ')})`;
           yamlLines.push(line);
         } else {
-          // 画面外の要素はカウントのみ
           hiddenItemCount++;
         }
       }
     }
 
-    // スクロールヒントの追加
+    // Stale Elements Cleanup (今回のスキャンで見つからなかったIDを削除)
+    for (const id of this.persistentElementMap.keys()) {
+      if (!currentScanIds.has(id)) {
+        this.persistentElementMap.delete(id);
+      }
+    }
+
     if (hiddenItemCount > 0) {
       yamlLines.push(
-        `\n... (${hiddenItemCount} more items are currently not visible. Use 'scroll' action to see them.)`
+        `\n... (${hiddenItemCount} more items are currently not visible/outside viewport. Use 'scroll' to explore.)`
       );
     }
 
+    const title = await page.title().catch(() => 'No Title');
     const stateText = `
+Page Title: ${title}
 URL: ${page.url()}
-Title: ${await page.title()}
 
-Interactive Elements (Visible Area Only):
-${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive elements found. Try scrolling.)'}
+Interactive Elements (Viewport):
+${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found in viewport)'}
 `;
 
-    return { stateText, elementMap };
+    return { stateText, elementMap: this.persistentElementMap };
   }
 
-  /**
-   * DOMの安定化を待つ (Smart Wait Strategy)
-   * 1. domcontentloaded
-   * 2. networkidle (short timeout)
-   * 3. MutationObserver (DOM変更が落ち着くまで)
-   */
   private async waitForStability(page: Page) {
     try {
-      // 最低限のロード待ち
       await page.waitForLoadState('domcontentloaded', { timeout: DOM_WAIT_TIMEOUT_MS });
-
-      // ネットワークの静定 (オプション: 500msだけ待つ)
-      try {
-        await page.waitForLoadState('networkidle', { timeout: 500 });
-      } catch {
-        /* ignore */
-      }
-
-      // DOM変更の静定 (MutationObserver)
-      await page.evaluate(() => {
-        return new Promise<void>((resolve) => {
-          let timeout: ReturnType<typeof setTimeout>;
-
-          const observer = new MutationObserver(() => {
-            clearTimeout(timeout);
-            // デバウンス用: 変更検知後、200ms静定するのを待つ
-            timeout = setTimeout(() => {
-              observer.disconnect();
-              resolve();
-            }, 200);
-          });
-
-          // 初期タイムアウト: 変更がそもそも起きない場合、200msで早期に解決
-          // observer宣言後に実行することでReferenceErrorを防ぐ
-          timeout = setTimeout(() => {
-            observer.disconnect();
-            resolve();
-          }, 200);
-
-          observer.observe(document.body, {
-            attributes: true,
-            childList: true,
-            subtree: true,
-          });
-
-          // フォールバック: 最大でも1秒で打ち切る
-          setTimeout(() => {
-            observer.disconnect();
-            resolve();
-          }, 1000);
-        });
-      });
-    } catch (e) {
-      // 待機に失敗しても致命的ではないので続行
-      console.warn('Smart wait failed or timed out:', e);
+      await page.waitForLoadState('networkidle', { timeout: 500 }).catch(() => {});
+    } catch {
+      /* ignore */
     }
   }
 
-  /**
-   * 個別フレーム内の要素をスキャンする
-   * Shadow DOM や iframe を考慮して探索を行う
-   */
   private async scanFrame(frame: Frame) {
-    // フレーム階層チェーンの構築
-    // 自分自身からルートに向かって親を辿り、各階層のセレクタを取得する
+    // フレームセレクタチェーンの構築
     const frameSelectorChain: string[] = [];
     let currentFrame = frame;
-
-    // ルートフレームに到達するまで親を辿る
     while (currentFrame.parentFrame()) {
       const parent = currentFrame.parentFrame();
       if (!parent) break;
-
       try {
         const frameElement = await currentFrame.frameElement();
-        // 親フレームのコンテキストで、自分自身(iframeタグ)を特定するセレクタを計算
         const selector = await this.calculateFrameSelector(frameElement);
-        frameSelectorChain.unshift(selector); // 配列の先頭に追加 (親 -> 子 の順にするため)
+        frameSelectorChain.unshift(selector);
       } catch {
-        // 取得できない場合はチェーンが切れるが、最善を尽くす
         frameSelectorChain.unshift('iframe');
       }
       currentFrame = parent;
     }
 
-    // ブラウザ内でJSを実行し、Handleとメタデータのペアを取得
-    // evaluateHandleを使うことで、DOM要素への参照(JSHandle)をNode.js側で維持する
+    // --- ブラウザ内でのDOM解析 ---
     const resultHandle = await frame.evaluateHandle((validRoles) => {
+      // 戻り値の型定義
       interface FoundItem {
         element: Element;
         metadata: ElementMetadataInfo;
       }
       const foundItems: FoundItem[] = [];
       const validRoleSet = new Set(validRoles);
-
-      // ビューポートのサイズ取得
       const viewportHeight = window.innerHeight;
       const viewportWidth = window.innerWidth;
 
-      // --- Browser Context Helpers (ブラウザ内で実行される関数群) ---
+      // --- Helper Functions ---
 
-      /**
-       * 要素が物理的に存在し、可視スタイルか判定
-       */
       function isVisibleStyle(el: Element): boolean {
         const style = window.getComputedStyle(el);
         const rect = el.getBoundingClientRect();
@@ -336,12 +198,8 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         );
       }
 
-      /**
-       * 要素が現在のビューポートに入っているか判定
-       */
       function isInViewport(el: Element): boolean {
         const rect = el.getBoundingClientRect();
-        // 完全に画面外でなければ「見える」とみなす（少しはみ出していてもOK）
         return (
           rect.top < viewportHeight &&
           rect.bottom > 0 &&
@@ -350,15 +208,8 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         );
       }
 
-      /**
-       * 要素の一意なXPathを生成する
-       */
       function getXPath(element: Element): string {
-        if (element.id !== '') {
-          // エスケープ処理: ダブルクォートを含むIDに対応
-          const escapedId = element.id.replace(/"/g, '\\"');
-          return `//*[@id="${escapedId}"]`;
-        }
+        if (element.id !== '') return `//*[@id="${element.id.replace(/"/g, '\\"')}"]`;
         if (element === document.body) return '/html/body';
         let ix = 0;
         const siblings = element.parentNode?.childNodes;
@@ -376,9 +227,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         return '';
       }
 
-      /**
-       * Deep Traversal (Shadow DOM対応の再帰探索)
-       */
+      // DOM探索 (Shadow DOM対応)
       function traverse(root: Document | ShadowRoot | Element) {
         const children = root.querySelectorAll('*');
         children.forEach((el) => {
@@ -389,186 +238,165 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         });
       }
 
-      /**
-       * 個別の要素がインタラクティブか判定し、メタデータを収集する
-       */
       function checkElement(el: Element) {
         if (!isVisibleStyle(el)) return;
 
-        const style = window.getComputedStyle(el);
         const tagName = el.tagName.toLowerCase();
+        const style = window.getComputedStyle(el);
+        const roleAttr = el.getAttribute('role');
 
-        // インタラクティブ判定
         const isScrollable =
           el.scrollHeight > el.clientHeight &&
           (style.overflowY === 'scroll' || style.overflowY === 'auto');
 
         const isInteractive =
           ['button', 'a', 'input', 'select', 'textarea', 'details', 'summary'].includes(tagName) ||
-          el.getAttribute('role') === 'button' ||
-          el.getAttribute('role') === 'link' ||
+          validRoleSet.has(roleAttr || '') ||
           el.getAttribute('contenteditable') === 'true' ||
-          style.cursor === 'pointer' || // Clickable Div対応
+          style.cursor === 'pointer' ||
           isScrollable;
 
         if (!isInteractive) return;
 
-        // テキスト取得とクリーニング
+        // テキストと機密情報マスク
         let text = (el as HTMLElement).innerText || (el as HTMLInputElement).value || '';
-        // 機密情報のマスク
         const inputType = el.getAttribute('type');
         const autocomplete = el.getAttribute('autocomplete');
+
         if (
           tagName === 'input' &&
           ((inputType && ['password', 'email', 'tel'].includes(inputType)) ||
             (autocomplete &&
-              (autocomplete.startsWith('cc-') ||
-                autocomplete.includes('password') ||
-                autocomplete === 'email')))
+              (autocomplete.includes('password') ||
+                autocomplete === 'email' ||
+                autocomplete.startsWith('cc-'))))
         ) {
           text = '[REDACTED]';
         }
-        const cleanText = text.replace(/\s+/g, ' ').trim().slice(0, 50);
+        const cleanText = text.replace(/\s+/g, ' ').trim();
+
         const ariaLabel = el.getAttribute('aria-label');
         const placeholder = el.getAttribute('placeholder');
         const testId = el.getAttribute('data-testid');
+        const title = el.getAttribute('title');
+        const alt = el.getAttribute('alt');
 
-        // Description (LLMに見せる名前)
-        const description = ariaLabel || placeholder || cleanText || 'Unlabeled Element';
+        // LLMへの表示用記述
+        const description =
+          ariaLabel || placeholder || title || alt || cleanText || 'Unlabeled Element';
 
-        // --- Pre-computation of Selectors (一意性チェック) ---
+        // Selectors候補の収集
         const selectors: SelectorCandidates = {};
+        if (testId) selectors.testId = testId;
+        if (placeholder) selectors.placeholder = placeholder;
+        if (cleanText && cleanText.length < 50) selectors.text = cleanText;
+        if (ariaLabel) selectors.label = ariaLabel;
+        if (title) selectors.title = title;
+        if (alt) selectors.altText = alt;
 
-        // 1. Test ID
-        // Shadow DOM内では一意性を保証できないため、testIdのみを記録（チェックをスキップ）
-        if (testId) {
-          selectors.testId = testId;
+        // Roleの推論
+        let finalRole = roleAttr;
+        if (!finalRole) {
+          if (tagName === 'button') finalRole = 'button';
+          else if (tagName === 'a' && el.hasAttribute('href')) finalRole = 'link';
+          else if (tagName === 'input' && inputType === 'checkbox') finalRole = 'checkbox';
+          else if (tagName === 'input' && inputType === 'radio') finalRole = 'radio';
+          else if (tagName === 'input') finalRole = 'textbox';
+          else if (tagName === 'select') finalRole = 'combobox';
         }
 
-        // 2. Placeholder
-        if (
-          placeholder &&
-          document.querySelectorAll(`[placeholder="${placeholder}"]`).length === 1
-        ) {
-          selectors.placeholder = placeholder;
+        if (finalRole && (ariaLabel || cleanText)) {
+          selectors.role = { role: finalRole, name: ariaLabel || cleanText };
         }
 
-        // 3. Text (簡易判定)
-        if (cleanText) {
-          const exactMatches = Array.from(document.querySelectorAll(tagName)).filter((e) => {
-            const t = (e as HTMLElement).innerText || (e as HTMLInputElement).value;
-            return t && t.replace(/\s+/g, ' ').trim() === cleanText;
-          });
-          if (exactMatches.length === 1) {
-            selectors.text = cleanText;
-          }
-        }
-
-        // 4. Role
-        let rawRole = el.getAttribute('role');
-        // Validate against whitelist if raw role attribute exists
-        if (rawRole && !validRoleSet.has(rawRole)) {
-          rawRole = null;
-        }
-
-        const role =
-          rawRole ||
-          (['button', 'link', 'heading'].includes(tagName) ? tagName : null) ||
-          (tagName === 'input' && ['checkbox', 'radio'].includes(inputType || '')
-            ? inputType
-            : null) ||
-          (tagName === 'a' && el.hasAttribute('href') ? 'link' : null);
-
-        if (role && (ariaLabel || cleanText)) {
-          selectors.role = { role, name: ariaLabel || cleanText };
-        }
+        // Semantic Hash用の属性収集
+        const attributes: Record<string, string> = {};
+        if (el.id) attributes['id'] = el.id;
+        if (el.className) attributes['class'] = el.className;
+        if (inputType) attributes['type'] = inputType;
+        if (finalRole) attributes['role'] = finalRole;
 
         foundItems.push({
           element: el,
           metadata: {
             xpath: getXPath(el),
             tagName,
-            inputType,
+            inputType: inputType || null,
             description,
             isScrollable,
-            isInViewport: isInViewport(el), // Viewport判定
+            isInViewport: isInViewport(el),
             selectors,
+            attributes,
+            textContent: cleanText.slice(0, 50),
           },
         });
       }
 
       traverse(document);
       return foundItems;
-    }, Array.from(VALID_ARIA_ROLES));
+    }, VALID_ARIA_ROLES);
 
+    // Playwright JSHandle -> ElementHandle変換
     const properties = await resultHandle.getProperties();
-    const items: Array<{
-      handle: ElementHandle;
-      metadata: ElementMetadataInfo;
-    }> = [];
+    const items: Array<{ handle: ElementHandle; metadata: ElementMetadataInfo }> = [];
 
     for (const prop of properties.values()) {
       const itemHandle = prop;
       const rawHandle = await itemHandle.getProperty('element');
-      // 重要: JSHandle から ElementHandle への変換
       const elementHandle = rawHandle.asElement();
 
       const metadataHandle = await itemHandle.getProperty('metadata');
       const metadata = await metadataHandle.jsonValue();
 
       if (elementHandle) {
-        items.push({
-          handle: elementHandle,
-          metadata: metadata as ElementMetadataInfo,
-        });
+        items.push({ handle: elementHandle, metadata: metadata as ElementMetadataInfo });
       } else {
-        // asElement()がnullの場合、ハンドルを破棄
         await rawHandle.dispose();
       }
-      // itemHandle, metadataHandleは不要になったので破棄
-      await metadataHandle.dispose(); // jsonValue()ではハンドルは返らないが念のため確認: getProperty戻り値はJSHandleなので破棄
+      await metadataHandle.dispose();
       await itemHandle.dispose();
     }
-
-    // ルートハンドルの破棄（メモリリーク対策）
     await resultHandle.dispose();
 
     return { frame, frameSelectorChain, items };
   }
 
-  /**
-   * iframeタグを特定するセレクタを計算する
-   * 親フレームのコンテキストで評価される
-   */
   private async calculateFrameSelector(handle: ElementHandle): Promise<string> {
     return await handle.evaluate((node) => {
-      // Element型にキャストしてプロパティにアクセスする
       const el = node as Element;
-      // name属性があればベスト
       const name = el.getAttribute('name');
-      if (name) {
-        return `iframe[name="${name.replace(/"/g, '\\"')}"]`;
-      }
-      // id属性があれば次点
-      if (el.id) {
-        return `iframe[id="${el.id.replace(/"/g, '\\"')}"]`;
-      }
-      // classがあれば使う
-      if (el.classList.length > 0) return `iframe.${el.classList[0]}`;
-      // src属性は変わる可能性が高いが、他になければ使う
+      if (name) return `iframe[name="${name.replace(/"/g, '\\"')}"]`;
+      if (el.id) return `iframe[id="${el.id.replace(/"/g, '\\"')}"]`;
+
       const src = el.getAttribute('src');
       if (src) {
         const cleanSrc = src.split('?')[0].replace(/["\\]/g, '\\$&');
         return `iframe[src*="${cleanSrc}"]`;
       }
-      // 最終手段
-      let ix = 1; // CSS selector is 1-based
-      let sibling = el.previousElementSibling;
-      while (sibling) {
-        if (sibling.tagName === el.tagName) ix++;
-        sibling = sibling.previousElementSibling;
-      }
-      return `iframe:nth-of-type(${ix})`;
+      return 'iframe';
     });
+  }
+
+  private generateSemanticHash(meta: ElementMetadataInfo): string {
+    // ハッシュの種: 変更されにくい属性 + 役割 + 識別子
+    const parts = [
+      meta.tagName,
+      meta.selectors.testId || '',
+      meta.attributes['role'] || '',
+      meta.attributes['type'] || '',
+      meta.selectors.placeholder || '',
+      meta.attributes['name'] || '',
+      // TextContentを含めるが、変わりやすいため短く制限
+      (meta.textContent || '').slice(0, 20),
+    ];
+
+    // 簡易FNV-1a like hash
+    let hash = 0x811c9dc5;
+    const str = parts.join('|');
+    for (let i = 0; i < str.length; i++) {
+      hash ^= str.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).substring(0, 8);
   }
 }

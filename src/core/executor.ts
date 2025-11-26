@@ -183,7 +183,11 @@ export class Executor {
           await h.selectOption({ label: val });
         } catch {
           // labelでの選択に失敗、valueで再試行
-          await h.selectOption({ value: val });
+          try {
+            await h.selectOption({ value: val });
+          } catch (e) {
+            throw new Error(`Failed to select option with label or value: "${val}"`, { cause: e });
+          }
         }
         break;
       case 'upload':
@@ -333,7 +337,7 @@ export class Executor {
   private buildContextCode(chain: string[]): string {
     let code = 'page';
     for (const selector of chain) {
-      code += `.frameLocator('${selector}')`;
+      code += `.frameLocator(${JSON.stringify(selector)})`;
     }
     return code;
   }

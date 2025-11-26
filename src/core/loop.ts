@@ -6,6 +6,7 @@ import { HistoryManager } from './history';
 import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
 import { DOM_WAIT_TIMEOUT_MS } from '../constants';
+import { ElementContainer } from '../types';
 
 export interface FlashLoopOptions {
   startUrl?: string;
@@ -27,6 +28,9 @@ export class FlashLoop {
   private history: HistoryManager;
   private generator: IGenerator;
   private logger: ILogger;
+
+  // メモリリーク対策: アクティブな要素マップを保持し、適宜クリーンアップする
+  private activeElementMap: Map<string, ElementContainer> = new Map();
 
   private options: FlashLoopOptions;
   private isExternalPage: boolean;
@@ -89,9 +93,12 @@ export class FlashLoop {
       this.logger.start(`Step ${stepCount}: Observing...`);
 
       try {
+        // 前回のステップで使用したElementHandleを破棄してメモリ解放
+        await this.clearActiveElements();
+
         // 1. Observe (DOM汚染なし、全フレーム走査)
-        // 返り値の elementMap を Executor に渡すことで高速化
         const { stateText, elementMap } = await this.observer.captureState(this.page);
+        this.activeElementMap = elementMap; // 新しいマップを保持
 
         // 2. Think
         this.logger.start('Thinking...');
@@ -106,7 +113,7 @@ export class FlashLoop {
 
         // 3. Execute (Handle操作 -> Code生成)
         // マップを渡すことで、DOM再探索をスキップ
-        const result = await this.executor.execute(plan, this.page, elementMap);
+        const result = await this.executor.execute(plan, this.page, this.activeElementMap);
 
         if (result.success) {
           this.logger.stop(); // スピナー停止
@@ -133,6 +140,7 @@ export class FlashLoop {
       }
     }
 
+    await this.cleanup();
     await this.generator.finish();
 
     // CLIモードの場合のみブラウザを閉じる
@@ -150,10 +158,24 @@ export class FlashLoop {
 
   /**
    * クリーンアップ処理
-   * In-Memory方式に変更したため、DOMクリーンアップは不要だが
-   * インターフェース互換性のために残す
+   * 保持しているElementHandleを破棄する
    */
   async cleanup(): Promise<void> {
-    // No-op
+    await this.clearActiveElements();
+  }
+
+  /**
+   * activeElementMap内のElementHandleを全て破棄し、マップをクリアする
+   */
+  private async clearActiveElements(): Promise<void> {
+    for (const container of this.activeElementMap.values()) {
+      try {
+        // ElementHandleを明示的に破棄してブラウザ側のメモリを解放
+        await container.handle.dispose();
+      } catch {
+        // すでに破棄されている場合などは無視
+      }
+    }
+    this.activeElementMap.clear();
   }
 }

@@ -51,8 +51,9 @@ export class Observer {
       frames.map(async (frame) => {
         try {
           return await this.scanFrame(frame);
-        } catch {
+        } catch (e) {
           // クロスオリジン制限などでアクセスできないフレームはスキップ
+          console.debug(`[Observer] Skipped frame: ${frame.url()}`, e);
           return null;
         }
       })
@@ -150,19 +151,21 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         return new Promise<void>((resolve) => {
           let timeout: ReturnType<typeof setTimeout>;
 
-          // 初期タイムアウト: 変更がない場合でも早期に解決
+          const observer = new MutationObserver(() => {
+            clearTimeout(timeout);
+            // デバウンス用: 変更検知後、200ms静定するのを待つ
+            timeout = setTimeout(() => {
+              observer.disconnect();
+              resolve();
+            }, 200);
+          });
+
+          // 初期タイムアウト: 変更がそもそも起きない場合、200msで早期に解決
+          // observer宣言後に実行することでReferenceErrorを防ぐ
           timeout = setTimeout(() => {
             observer.disconnect();
             resolve();
           }, 200);
-
-          const observer = new MutationObserver(() => {
-            clearTimeout(timeout);
-            timeout = setTimeout(() => {
-              observer.disconnect();
-              resolve();
-            }, 200); // 200ms間変更がなければ安定とみなす
-          });
 
           observer.observe(document.body, {
             attributes: true,
@@ -170,7 +173,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
             subtree: true,
           });
 
-          // そもそも変更が起きない場合のためのフォールバック (1秒)
+          // フォールバック: 最大でも1秒で打ち切る
           setTimeout(() => {
             observer.disconnect();
             resolve();

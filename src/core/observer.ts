@@ -420,8 +420,11 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         const autocomplete = el.getAttribute('autocomplete');
         if (
           tagName === 'input' &&
-          ((inputType && ['password'].includes(inputType)) ||
-            (autocomplete && autocomplete.startsWith('cc-')))
+          ((inputType && ['password', 'email', 'tel'].includes(inputType)) ||
+            (autocomplete &&
+              (autocomplete.startsWith('cc-') ||
+                autocomplete.includes('password') ||
+                autocomplete === 'email')))
         ) {
           text = '[REDACTED]';
         }
@@ -437,7 +440,8 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No visible interactive element
         const selectors: SelectorCandidates = {};
 
         // 1. Test ID
-        if (testId && document.querySelectorAll(`[data-testid="${testId}"]`).length === 1) {
+        // Shadow DOM内では一意性を保証できないため、testIdのみを記録（チェックをスキップ）
+        if (testId) {
           selectors.testId = testId;
         }
 

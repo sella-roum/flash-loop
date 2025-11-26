@@ -65,8 +65,11 @@ export class Executor {
       // --- Global Scroll (ターゲット指定なし) ---
       if (plan.actionType === 'scroll' && !plan.targetId) {
         await page.mouse.wheel(0, 500);
-        // グローバルスクロールはコード生成しない（またはevaluateで記述）
-        return { success: true, generatedCode: '', retryable: true };
+        return {
+          success: true,
+          generatedCode: 'await page.mouse.wheel(0, 500);',
+          retryable: true,
+        };
       }
 
       // --- Assert URL ---
@@ -166,7 +169,9 @@ export class Executor {
         await h.fill(val);
         break;
       case 'type':
-        await h.type(val);
+        // ElementHandleにはpressSequentiallyがないため、typeを使用
+        // delayを入れてpressSequentiallyの挙動に近づける
+        await h.type(val, { delay: 50 });
         break;
       case 'clear':
         await h.fill('');
@@ -404,8 +409,13 @@ export class Executor {
     // 特殊対応: select_option は runtime の fallback ロジックを再現するために構造を変える
     if (plan.actionType === 'select_option') {
       const selector = `${base}${selectorCode}`;
-      // labelで試行し、失敗したらvalueで試行するチェーン
-      return `await ${selector}.selectOption({ label: ${val} }).catch(() => ${selector}.selectOption({ value: ${val} }));`;
+      // try-catch ブロックでより堅牢なコードを生成
+      return `
+try {
+  await ${selector}.selectOption({ label: ${val} });
+} catch (e) {
+  await ${selector}.selectOption({ value: ${val} });
+}`.trim();
     }
 
     let actionCode = '';

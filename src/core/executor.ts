@@ -26,10 +26,20 @@ export class Executor {
         const target = plan.value || plan.targetId || '';
         if (!target) throw new Error('Switch tab requires a target (index or title).');
         const index = parseInt(target, 10);
+
+        // 実行
         await contextManager.switchToTab(isNaN(index) ? target : index);
+
+        // [Review Fix] コメントのみではなく、実行可能なコードを生成する
+        let generatedCode = `// Switch tab to "${target}" (Title matching logic not supported in codegen yet)`;
+        if (!isNaN(index)) {
+          // インデックス指定の場合は context.pages() を使用したコードを生成
+          generatedCode = `await page.context().pages()[${index}].bringToFront();`;
+        }
+
         return {
           success: true,
-          generatedCode: `// Action: Switch tab to "${target}" (Context switching not recorded in test code yet)`,
+          generatedCode,
           retryable: false,
         };
       }
@@ -125,11 +135,21 @@ export class Executor {
       };
     } catch (error) {
       const translatedError = ErrorTranslator.translate(error);
+      const msg = String(error);
+
+      // [Review Fix] エラータイプに基づいて retryable を動的に判定
+      // 引数不足、未サポートアクション、メモリ内にIDがない等の致命的エラーはリトライしない
+      const isFatal =
+        msg.includes('requires a target') ||
+        msg.includes('requires targetId') ||
+        msg.includes('Unsupported action') ||
+        msg.includes('not found in memory');
+
       return {
         success: false,
         error: translatedError,
         userGuidance: translatedError,
-        retryable: true,
+        retryable: !isFatal,
       };
     }
   }
@@ -296,6 +316,7 @@ export class Executor {
 
   private generateCode(selectorCode: string, plan: ActionPlan, auxCode?: string): string {
     const val = plan.value ? `'${plan.value.replace(/'/g, "\\'")}'` : '';
+
     switch (plan.actionType) {
       case 'click':
         return `await ${selectorCode}.click();`;
@@ -315,10 +336,30 @@ export class Executor {
         return `await ${selectorCode}.check();`;
       case 'uncheck':
         return `await ${selectorCode}.uncheck();`;
-      case 'upload':
-        return `await ${selectorCode}.setInputFiles(${val});`; // 配列対応は複雑なので文字列のまま
+
+      // [Review Fix] upload: カンマ区切りの複数ファイル対応
+      case 'upload': {
+        const rawVal = plan.value || '';
+        if (rawVal.includes(',')) {
+          // 'file1.png', 'file2.png' -> "'file1.png', 'file2.png'"
+          // 配列リテラルとしてコード生成
+          const files = rawVal.split(',').map((f) => `'${f.trim().replace(/'/g, "\\'")}'`);
+          return `await ${selectorCode}.setInputFiles([${files.join(', ')}]);`;
+        }
+        // 単一ファイル
+        return `await ${selectorCode}.setInputFiles(${val});`;
+      }
+
       case 'keypress':
         return `await ${selectorCode}.press(${val});`;
+
+      // [Review Fix] focus: ケース追加
+      case 'focus':
+        return `await ${selectorCode}.focus();`;
+
+      // [Review Fix] select_option: ケース追加 (Label優先)
+      case 'select_option':
+        return `await ${selectorCode}.selectOption({ label: ${val} });`;
 
       case 'assert_visible':
         return `await expect(${selectorCode}).toBeVisible();`;
@@ -337,6 +378,8 @@ export class Executor {
         return `await ${selectorCode}.scrollIntoViewIfNeeded();`;
 
       default:
+        // 引数があるかわからないため、安全策としてvalを入れているが、
+        // 上記で主要なアクションはカバーされているはず
         return `await ${selectorCode}.${plan.actionType}(${val});`;
     }
   }

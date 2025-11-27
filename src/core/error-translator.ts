@@ -53,6 +53,19 @@ Advice:
 - The site might be down or blocking the request.`;
     }
 
+    // 6. Target ID Not Found (Memory mismatch / ID Rotation)
+    // [Review Fix] IDが見つからない場合のアドバイスを強化
+    if (
+      msg.includes('not found in memory') ||
+      (msg.includes('Target') && msg.includes('not found'))
+    ) {
+      return `Target Not Found Error: The element with the specified ID could not be found in the current state.
+Advice:
+- The DOM has likely changed, and the element IDs have been rotated or re-assigned.
+- DO NOT retry the exact same ID immediately.
+- Perform a new observation (scan) to get the latest IDs and verify if the element still exists.`;
+    }
+
     // Fallback
     const cleanMsg = msg.length > 200 ? msg.slice(0, 200) + '...' : msg;
     return `Unknown Execution Error: ${cleanMsg}

@@ -1,255 +1,239 @@
+/**
+ * src/core/executor.ts
+ * AIの意思決定を実行に移す。
+ * 堅牢性を最優先し、Locatorの一意性を検証してから実行する (Double-Check Strategy)
+ */
 import { Page, Locator, FrameLocator } from 'playwright';
 import { expect } from '@playwright/test';
 import { ActionPlan, ExecutionResult, ElementContainer } from '../types';
+import { ContextManager } from './context-manager';
+import { ErrorTranslator } from './error-translator';
 
-/**
- * アクションを実行し、再現可能なPlaywrightコードを生成するクラス
- */
 export class Executor {
   /**
-   * アクションを実行し、コードを生成する
-   * DOM再探索を行わず、メモリ内の情報を使用する
+   * アクションを実行し、検証済みコードを生成する
    */
   async execute(
     plan: ActionPlan,
-    page: Page,
+    contextManager: ContextManager,
     elementMap: Map<string, ElementContainer>
   ): Promise<ExecutionResult> {
     try {
-      // --- Meta Actions ---
-      // finish アクションも終了として扱う
-      if (plan.isFinished || plan.actionType === 'finish') {
+      const page = contextManager.getActivePage();
+
+      // --- Context / Meta Actions ---
+      if (plan.actionType === 'switch_tab') {
+        const target = plan.value || plan.targetId || '';
+        if (!target) throw new Error('Switch tab requires a target (index or title).');
+        const index = parseInt(target, 10);
+
+        // 実行
+        await contextManager.switchToTab(isNaN(index) ? target : index);
+
+        let generatedCode = '';
+        if (!isNaN(index)) {
+          // インデックス指定の場合
+          generatedCode = `await page.context().pages()[${index}].bringToFront();`;
+        } else {
+          // 文字列（タイトル/URL）指定の場合のスニペット生成
+          const escapedTarget = target.replace(/'/g, "\\'");
+          generatedCode = `
+// Switch to tab matching "${escapedTarget}"
+for (const p of page.context().pages()) {
+  if (p.url().includes('${escapedTarget}') || (await p.title()).includes('${escapedTarget}')) {
+    await p.bringToFront();
+    break;
+  }
+}`.trim();
+        }
+
         return {
           success: true,
-          generatedCode: '// Task Completed based on AI decision',
+          generatedCode,
           retryable: false,
         };
       }
 
-      // --- Navigation / Page Actions ---
+      if (plan.actionType === 'close_tab') {
+        await contextManager.closeActiveTab();
+        return {
+          success: true,
+          generatedCode: `await page.close();`,
+          retryable: false,
+        };
+      }
+
+      if (plan.actionType === 'wait_for_element') {
+        if (!plan.targetId) throw new Error('wait_for_element requires targetId');
+        const target = elementMap.get(plan.targetId);
+        if (!target) throw new Error(`Target ${plan.targetId} not found`);
+
+        const { locator, code } = await this.getRobustLocator(target, page);
+        await locator.waitFor({ state: 'visible', timeout: 10000 });
+        return {
+          success: true,
+          generatedCode: `await ${code}.waitFor({ state: 'visible' });`,
+          retryable: true,
+        };
+      }
+
+      if (plan.actionType === 'handle_dialog') {
+        const action = plan.value === 'accept' ? 'accept' : 'dismiss';
+        await contextManager.handleDialog(action);
+        return {
+          success: true,
+          generatedCode: `// Note: Simple dialog handling. (Runtime uses ContextManager for auto-dismiss)
+page.once('dialog', dialog => dialog.${action}());`,
+          retryable: false,
+        };
+      }
+
       if (plan.actionType === 'navigate') {
-        if (!plan.value) throw new Error('Value is required for navigation');
-
-        // URLスキームの検証
-        const url = new URL(plan.value, page.url());
-        if (!['http:', 'https:'].includes(url.protocol)) {
-          throw new Error(`Unsupported URL scheme: ${url.protocol}`);
-        }
-
+        if (!plan.value) throw new Error('navigate action requires a URL in value.');
         await page.goto(plan.value);
         return {
           success: true,
-          generatedCode: `await page.goto(${JSON.stringify(plan.value)});`,
+          generatedCode: `await page.goto('${plan.value.replace(/'/g, "\\'")}');`,
           retryable: true,
         };
       }
 
       if (plan.actionType === 'reload') {
         await page.reload();
-        return {
-          success: true,
-          generatedCode: 'await page.reload();',
-          retryable: true,
-        };
+        return { success: true, generatedCode: 'await page.reload();', retryable: true };
       }
 
       if (plan.actionType === 'go_back') {
         await page.goBack();
-        return {
-          success: true,
-          generatedCode: 'await page.goBack();',
-          retryable: true,
-        };
+        return { success: true, generatedCode: 'await page.goBack();', retryable: true };
       }
 
-      // --- Global Scroll (ターゲット指定なし) ---
-      if (plan.actionType === 'scroll' && !plan.targetId) {
-        await page.mouse.wheel(0, 500);
-        return {
-          success: true,
-          generatedCode: 'await page.mouse.wheel(0, 500);',
-          retryable: true,
-        };
-      }
-
-      // --- Assert URL ---
-      if (plan.actionType === 'assert_url') {
-        const url = plan.value || '';
-        // 正規表現ではなく、文字列マッチングを使用 (ReDoS対策)
-        await expect(page).toHaveURL(url, { timeout: 5000 });
-        return {
-          success: true,
-          generatedCode: `await expect(page).toHaveURL(${JSON.stringify(url)});`,
-          retryable: false,
-        };
+      if (plan.isFinished || plan.actionType === 'finish') {
+        return { success: true, generatedCode: '// Task Finished', retryable: false };
       }
 
       // --- Element Interaction ---
-      // ここから先は targetId が必須
-      const target = elementMap.get(plan.targetId || '');
+      if (!plan.targetId) throw new Error('Target ID is missing for this action.');
+      const target = elementMap.get(plan.targetId);
+      if (!target) throw new Error(`Element with ID "${plan.targetId}" not found in memory.`);
 
-      // 要素が見つからない場合
-      if (!target) {
-        throw new Error(`Virtual ID "${plan.targetId}" not found in memory.`);
+      // 1. Double-Check
+      const { locator, code: selectorCode } = await this.getRobustLocator(target, page);
+
+      // Drag and Drop 用の補助ロケータ解決
+      let auxLocator: Locator | undefined;
+      let auxCode: string | undefined;
+
+      if (plan.actionType === 'drag_and_drop') {
+        if (!plan.targetId2) throw new Error('Drag and drop requires targetId2');
+        const target2 = elementMap.get(plan.targetId2);
+        if (!target2) throw new Error(`Target 2 (ID: ${plan.targetId2}) not found`);
+        const res2 = await this.getRobustLocator(target2, page);
+        auxLocator = res2.locator;
+        auxCode = res2.code;
       }
 
-      // アクション実行 (Handle -> Recovery)
-      // ここでDOM操作が行われる
-      await this.performAction(target, plan, page, elementMap);
+      // 2. Execute Action
+      await this.performLocatorAction(locator, plan, page, auxLocator);
 
-      // コード生成 (Metadata based)
-      // DOM操作が成功していれば、メタデータからコードを生成する
-      const code = this.generatePlaywrightCode(target, plan, elementMap);
+      // 3. Stabilization
+      await this.waitForStabilization(page);
 
-      return { success: true, generatedCode: code, retryable: false };
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return { success: false, error: errorMessage, retryable: true };
+      return {
+        success: true,
+        generatedCode: this.generateCode(selectorCode, plan, auxCode),
+        retryable: false,
+      };
+    } catch (error) {
+      const translatedError = ErrorTranslator.translate(error);
+      const msg = String(error);
+
+      const isFatal =
+        msg.includes('requires a target') ||
+        msg.includes('requires targetId') ||
+        msg.includes('requires a URL') ||
+        msg.includes('Unsupported action') ||
+        msg.includes('not found in memory') ||
+        msg.includes('not found') || // "Target ... not found" も含む
+        msg.includes('Target ID is missing');
+
+      return {
+        success: false,
+        error: translatedError,
+        userGuidance: translatedError,
+        retryable: !isFatal,
+      };
     }
   }
 
   /**
-   * 実際の操作を行う。
-   * まずElementHandleで試み、StaleエラーならLocator再構築でリカバリする。
+   * ElementContainerから「現在動作する」最適なLocatorを生成・検証する
    */
-  private async performAction(
+  private async getRobustLocator(
     target: ElementContainer,
-    plan: ActionPlan,
-    page: Page,
-    elementMap: Map<string, ElementContainer>
-  ) {
-    try {
-      // 1. Handleでの高速実行
-      // ElementHandleがあれば、XPath等を解釈せずに直接ブラウザ内の要素を叩ける
-      await this.performHandleAction(target, plan);
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      // Stale Element / Detached エラーの場合のみリカバリを試みる
-      if (
-        msg.includes('detached') ||
-        msg.includes('target closed') ||
-        msg.includes('stale') ||
-        msg.includes('Execution context was destroyed') ||
-        msg.includes('ForceRecovery') // 意図的なリカバリ要求
-      ) {
-        console.warn(
-          `[Executor] Action failed with handle (ID: ${target.id}). Recovering with selectors...`
-        );
-        await this.recoverAndExecute(target, plan, page, elementMap);
-      } else {
-        throw error; // その他のエラー（not visibleなど）はそのまま投げる
-      }
-    }
-  }
-
-  /**
-   * ElementHandleに対する操作を実行
-   */
-  private async performHandleAction(target: ElementContainer, plan: ActionPlan) {
-    const h = target.handle;
-    const val = plan.value || '';
-
-    switch (plan.actionType) {
-      case 'click':
-        await h.click();
-        break;
-      case 'dblclick':
-        await h.dblclick();
-        break;
-      case 'right_click':
-        await h.click({ button: 'right' });
-        break;
-      case 'hover':
-        await h.hover();
-        break;
-      case 'focus':
-        await h.focus();
-        break;
-      case 'fill':
-        await h.fill(val);
-        break;
-      case 'type':
-        // ElementHandleにはpressSequentiallyがないため、typeを使用
-        // delayを入れてpressSequentiallyの挙動に近づける
-        await h.type(val, { delay: 50 });
-        break;
-      case 'clear':
-        await h.fill('');
-        break;
-      case 'check':
-        await h.check();
-        break;
-      case 'uncheck':
-        await h.uncheck();
-        break;
-      case 'select_option':
-        // valueまたはlabelで選択を試みる
-        try {
-          await h.selectOption({ label: val });
-        } catch {
-          // labelでの選択に失敗、valueで再試行
-          try {
-            await h.selectOption({ value: val });
-          } catch (e) {
-            throw new Error(`Failed to select option with label or value: "${val}"`, { cause: e });
-          }
-        }
-        break;
-      case 'upload':
-        await h.setInputFiles(val);
-        break;
-      case 'keypress':
-        await h.press(val);
-        break;
-      case 'scroll':
-        // 要素自体をスクロールさせる (コンテナの場合)
-        await h.scrollIntoViewIfNeeded();
-        await h.evaluate((el) => {
-          // ElementHandle.evaluate の引数は Node と推論されるためキャスト
-          (el as HTMLElement).scrollBy({ top: 300, behavior: 'smooth' });
-        });
-        break;
-      case 'drag_and_drop':
-        // ElementHandleにはdragToがないため、意図的にエラーを投げてLocatorリカバリへ回す
-        throw new Error('ForceRecovery: Drag and drop requires Locator execution');
-
-      // Assertions (Handleでは限定的)
-      case 'assert_visible':
-        if (!(await h.isVisible())) throw new Error('Element not visible');
-        break;
-      case 'assert_text': {
-        const text = await h.innerText();
-        if (!text.includes(val)) throw new Error(`Text mismatch. Found: "${text}"`);
-        break;
-      }
-      case 'assert_value': {
-        const v = await h.inputValue();
-        if (v !== val) throw new Error(`Value mismatch. Found: "${v}"`);
-        break;
-      }
-      default:
-        throw new Error(`Unsupported action for handle: ${plan.actionType}`);
-    }
-  }
-
-  /**
-   * リカバリ実行: メタデータからLocatorを再構築して実行
-   * Stale Element Error発生時や、Locator APIが必要なアクションで使用
-   */
-  private async recoverAndExecute(
-    target: ElementContainer,
-    plan: ActionPlan,
-    page: Page,
-    elementMap: Map<string, ElementContainer>
-  ) {
-    // 1. コンテキストの構築 (Nested Iframe対応)
+    page: Page
+  ): Promise<{ locator: Locator; code: string }> {
     const context = this.buildContext(page, target.frameSelectorChain);
+    const contextCode = this.buildContextCode(target.frameSelectorChain);
 
-    // 2. Locatorの再構築
-    const locator = this.reconstructLocator(context, target);
+    const s = target.selectors;
+    const candidates: Array<{ get: () => Locator; code: string }> = [];
+
+    if (s.testId) {
+      candidates.push({
+        get: () => context.getByTestId(s.testId!),
+        code: `.getByTestId('${s.testId.replace(/'/g, "\\'")}')`,
+      });
+    }
+    if (s.role && s.role.name) {
+      const role = s.role.role as Parameters<Page['getByRole']>[0];
+      const name = s.role.name;
+      candidates.push({
+        get: () => context.getByRole(role, { name: name, exact: true }),
+        code: `.getByRole('${role}', { name: '${name.replace(/'/g, "\\'")}', exact: true })`,
+      });
+    }
+    if (s.placeholder) {
+      candidates.push({
+        get: () => context.getByPlaceholder(s.placeholder!),
+        code: `.getByPlaceholder('${s.placeholder.replace(/'/g, "\\'")}')`,
+      });
+    }
+    if (s.text) {
+      candidates.push({
+        get: () => context.getByText(s.text!, { exact: true }),
+        code: `.getByText('${s.text!.replace(/'/g, "\\'")}', { exact: true })`,
+      });
+    }
+    // XPath
+    candidates.push({
+      get: () => context.locator(target.xpath),
+      code: `.locator('${target.xpath.replace(/'/g, "\\'")}')`,
+    });
+
+    for (const cand of candidates) {
+      try {
+        const loc = cand.get();
+        if ((await loc.count()) === 1 && (await loc.isVisible())) {
+          return { locator: loc, code: `${contextCode}${cand.code}` };
+        }
+      } catch {
+        // next candidate
+      }
+    }
+
+    throw new Error(
+      'Failed to generate a robust selector for this element. It might be hidden or dynamic.'
+    );
+  }
+
+  private async performLocatorAction(
+    locator: Locator,
+    plan: ActionPlan,
+    page: Page,
+    auxLocator?: Locator
+  ) {
     const val = plan.value || '';
-
-    // 3. Locatorでの実行
     switch (plan.actionType) {
       case 'click':
         await locator.click();
@@ -266,20 +250,27 @@ export class Executor {
       case 'focus':
         await locator.focus();
         break;
+      case 'clear':
+        await locator.clear();
+        break;
       case 'fill':
         await locator.fill(val);
         break;
       case 'type':
         await locator.pressSequentially(val);
         break;
-      case 'clear':
-        await locator.clear();
-        break;
       case 'check':
         await locator.check();
         break;
       case 'uncheck':
         await locator.uncheck();
+        break;
+      case 'upload':
+        // 修正: カンマ区切りで複数ファイル対応
+        {
+          const files = val.includes(',') ? val.split(',').map((f) => f.trim()) : val;
+          await locator.setInputFiles(files);
+        }
         break;
       case 'select_option':
         try {
@@ -288,28 +279,10 @@ export class Executor {
           await locator.selectOption({ value: val });
         }
         break;
-      case 'upload':
-        await locator.setInputFiles(val);
-        break;
       case 'keypress':
         await locator.press(val);
         break;
-      case 'drag_and_drop': {
-        const target2 = elementMap.get(plan.targetId2 || '');
-        if (target2) {
-          const context2 = this.buildContext(page, target2.frameSelectorChain);
-          const locator2 = this.reconstructLocator(context2, target2);
-          await locator.dragTo(locator2);
-        } else {
-          throw new Error('Target 2 not found for drag and drop');
-        }
-        break;
-      }
-      case 'scroll':
-        await locator.evaluate((el) =>
-          (el as HTMLElement).scrollBy({ top: 300, behavior: 'smooth' })
-        );
-        break;
+
       // Assertions
       case 'assert_visible':
         await expect(locator).toBeVisible();
@@ -320,180 +293,111 @@ export class Executor {
       case 'assert_value':
         await expect(locator).toHaveValue(val);
         break;
-      default:
-        throw new Error(`Unsupported action for locator recovery: ${plan.actionType}`);
-    }
-  }
-
-  /**
-   * フレームチェーンからコンテキスト(FrameLocator)を再帰的に構築
-   */
-  private buildContext(page: Page, chain: string[]): Page | FrameLocator {
-    let context: Page | FrameLocator = page;
-    for (const selector of chain) {
-      context = context.frameLocator(selector);
-    }
-    return context;
-  }
-
-  /**
-   * コード生成用のベース文字列を作成 (例: page.frameLocator('A').frameLocator('B'))
-   */
-  private buildContextCode(chain: string[]): string {
-    let code = 'page';
-    for (const selector of chain) {
-      code += `.frameLocator(${JSON.stringify(selector)})`;
-    }
-    return code;
-  }
-
-  /**
-   * メタデータから最適なLocatorオブジェクトを生成するヘルパー
-   */
-  private reconstructLocator(context: Page | FrameLocator, target: ElementContainer): Locator {
-    const s = target.selectors;
-
-    // 優先順位: TestID > Role > Placeholder > Text > XPath
-    if (s.testId) {
-      return context.getByTestId(s.testId);
-    }
-    if (s.role) {
-      // Playwrightの型定義にキャスト
-      return context.getByRole(s.role.role as Parameters<Page['getByRole']>[0], {
-        name: s.role.name,
-        exact: true,
-      });
-    }
-    if (s.placeholder) {
-      return context.getByPlaceholder(s.placeholder);
-    }
-    if (s.text) {
-      return context.getByText(s.text);
-    }
-    // 最終手段: XPath (Shadow DOM内だと失敗する可能性が高いが、一応フォールバック)
-    return context.locator(target.xpath);
-  }
-
-  /**
-   * 再現性のあるPlaywrightコード文字列を生成する
-   */
-  private generatePlaywrightCode(
-    target: ElementContainer,
-    plan: ActionPlan,
-    elementMap: Map<string, ElementContainer>
-  ): string {
-    // 1. ベース部分 (Nested Iframe対応)
-    const base = this.buildContextCode(target.frameSelectorChain);
-
-    // 2. セレクタ部分 (文字列)
-    // インジェクション対策として JSON.stringify を使用
-    let selectorCode = '';
-    const s = target.selectors;
-
-    if (s.testId) {
-      selectorCode = `.getByTestId(${JSON.stringify(s.testId)})`;
-    } else if (s.role) {
-      selectorCode = `.getByRole(${JSON.stringify(s.role.role)}, { name: ${JSON.stringify(s.role.name)}, exact: true })`;
-    } else if (s.placeholder) {
-      selectorCode = `.getByPlaceholder(${JSON.stringify(s.placeholder)})`;
-    } else if (s.text) {
-      selectorCode = `.getByText(${JSON.stringify(s.text)})`;
-    } else {
-      // XPathフォールバック時は警告コメントを入れる
-      selectorCode = `.locator(${JSON.stringify(target.xpath)}) /* Warning: Robust selector not found */`;
-    }
-
-    // 3. アクション部分
-    const val = plan.value ? JSON.stringify(plan.value) : '';
-
-    // 特殊対応: select_option は runtime の fallback ロジックを再現するために構造を変える
-    if (plan.actionType === 'select_option') {
-      const selector = `${base}${selectorCode}`;
-      // try-catch ブロックでより堅牢なコードを生成
-      return `
-try {
-  await ${selector}.selectOption({ label: ${val} });
-} catch (e) {
-  await ${selector}.selectOption({ value: ${val} });
-}`.trim();
-    }
-
-    let actionCode = '';
-
-    switch (plan.actionType) {
-      case 'click':
-        actionCode = '.click()';
+      case 'assert_url':
+        // シンプルなURLチェックに変更（過剰なRegExpエスケープを回避）
+        await expect(page).toHaveURL(val);
         break;
-      case 'dblclick':
-        actionCode = '.dblclick()';
-        break;
-      case 'right_click':
-        actionCode = ".click({ button: 'right' })";
-        break;
-      case 'hover':
-        actionCode = '.hover()';
-        break;
-      case 'focus':
-        actionCode = '.focus()';
-        break;
-      case 'fill':
-        actionCode = `.fill(${val})`;
-        break;
-      case 'type':
-        actionCode = `.pressSequentially(${val})`;
-        break;
-      case 'clear':
-        actionCode = '.clear()';
-        break;
-      case 'check':
-        actionCode = '.check()';
-        break;
-      case 'uncheck':
-        actionCode = '.uncheck()';
-        break;
-      // select_option は上で処理済み
-      case 'upload':
-        actionCode = `.setInputFiles(${val})`;
-        break;
-      case 'keypress':
-        actionCode = `.press(${val})`;
+
+      case 'scroll':
+        await locator.scrollIntoViewIfNeeded();
         break;
 
       case 'drag_and_drop': {
-        // D&Dの場合、ターゲット2のセレクタも必要
-        const target2 = elementMap.get(plan.targetId2 || '');
-        if (target2) {
-          const base2 = this.buildContextCode(target2.frameSelectorChain);
-          let sel2 = '';
-          const s2 = target2.selectors;
-          if (s2.testId) sel2 = `.getByTestId(${JSON.stringify(s2.testId)})`;
-          else if (s2.role)
-            sel2 = `.getByRole(${JSON.stringify(s2.role.role)}, { name: ${JSON.stringify(s2.role.name)}, exact: true })`;
-          else sel2 = `.locator(${JSON.stringify(target2.xpath)})`;
-
-          actionCode = `.dragTo(${base2}${sel2})`;
-        } else {
-          actionCode = '.dragTo(/* Unknown Target */)';
-        }
+        if (!auxLocator) throw new Error('Drag and drop requires auxiliary locator (target2)');
+        await locator.dragTo(auxLocator);
         break;
       }
 
-      // Assertions
-      case 'assert_visible':
-        return `await expect(${base}${selectorCode}).toBeVisible();`;
-      case 'assert_text':
-        return `await expect(${base}${selectorCode}).toContainText(${val});`;
-      case 'assert_value':
-        return `await expect(${base}${selectorCode}).toHaveValue(${val});`;
+      default:
+        throw new Error(`Unsupported action: ${plan.actionType}`);
+    }
+  }
 
-      // Scroll (通常はコード化しないが、明示的に書くなら)
+  private buildContext(page: Page, chain: string[]): Page | FrameLocator {
+    let context: Page | FrameLocator = page;
+    for (const sel of chain) context = context.frameLocator(sel);
+    return context;
+  }
+
+  private buildContextCode(chain: string[]): string {
+    let code = 'page';
+    for (const sel of chain) code += `.frameLocator('${sel.replace(/'/g, "\\'")}')`;
+    return code;
+  }
+
+  private generateCode(selectorCode: string, plan: ActionPlan, auxCode?: string): string {
+    const val = plan.value ? `'${plan.value.replace(/'/g, "\\'")}'` : '';
+
+    switch (plan.actionType) {
+      case 'click':
+        return `await ${selectorCode}.click();`;
+      case 'dblclick':
+        return `await ${selectorCode}.dblclick();`;
+      case 'right_click':
+        return `await ${selectorCode}.click({ button: 'right' });`;
+      case 'hover':
+        return `await ${selectorCode}.hover();`;
+      case 'fill':
+        return `await ${selectorCode}.fill(${val});`;
+      case 'type':
+        return `await ${selectorCode}.pressSequentially(${val});`;
+      case 'clear':
+        return `await ${selectorCode}.clear();`;
+      case 'check':
+        return `await ${selectorCode}.check();`;
+      case 'uncheck':
+        return `await ${selectorCode}.uncheck();`;
+
+      case 'upload': {
+        const rawVal = plan.value || '';
+        if (rawVal.includes(',')) {
+          // 'file1.png', 'file2.png' -> "'file1.png', 'file2.png'"
+          // 配列リテラルとしてコード生成
+          const files = rawVal.split(',').map((f) => `'${f.trim().replace(/'/g, "\\'")}'`);
+          return `await ${selectorCode}.setInputFiles([${files.join(', ')}]);`;
+        }
+        // 単一ファイル
+        return `await ${selectorCode}.setInputFiles(${val});`;
+      }
+
+      case 'keypress':
+        return `await ${selectorCode}.press(${val});`;
+
+      case 'focus':
+        return `await ${selectorCode}.focus();`;
+
+      case 'select_option':
+        return `await ${selectorCode}.selectOption({ label: ${val} }).catch(() => ${selectorCode}.selectOption({ value: ${val} }));`;
+
+      case 'assert_visible':
+        return `await expect(${selectorCode}).toBeVisible();`;
+      case 'assert_text':
+        return `await expect(${selectorCode}).toContainText(${val});`;
+      case 'assert_value':
+        return `await expect(${selectorCode}).toHaveValue(${val});`;
+      case 'assert_url':
+        return `await expect(page).toHaveURL(${val});`;
+
+      case 'drag_and_drop':
+        return `await ${selectorCode}.dragTo(${auxCode || '/* Unknown Target */'});`;
+
       case 'scroll':
-        return `// Action: Scroll ${base}${selectorCode}`;
+        return `await ${selectorCode}.scrollIntoViewIfNeeded();`;
 
       default:
-        actionCode = '/* Unknown Action */';
+        // 引数があるかわからないため、安全策としてvalを入れているが、
+        // 上記で主要なアクションはカバーされているはず
+        return `await ${selectorCode}.${plan.actionType}(${val});`;
     }
+  }
 
-    return `await ${base}${selectorCode}${actionCode};`;
+  private async waitForStabilization(page: Page) {
+    try {
+      await page.waitForLoadState('domcontentloaded');
+      // SPA対応: 短い networkidle も待機
+      await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => {});
+    } catch {
+      // ignore error (timeout etc)
+    }
   }
 }

@@ -1,62 +1,87 @@
+/**
+ * src/types.ts
+ * アプリケーション全体で使用する型定義
+ */
 import { z } from 'zod';
-import { ElementHandle, Frame } from 'playwright';
+import { ElementHandle, Frame, Page } from 'playwright';
+import { ILogger } from './tools/logger';
+
+// --- FlashLoop Options ---
+
+export interface FlashLoopOptions {
+  startUrl?: string;
+  headless?: boolean;
+  maxSteps?: number;
+  viewport?: { width: number; height: number };
+  // ライブラリ利用時のオプション
+  page?: Page; // 既存のPageインスタンス
+  logger?: ILogger; // 外部から注入するロガー
+}
+
+// --- Action Definitions ---
 
 /**
  * Playwrightで実行可能なすべてのアクションタイプ
- * LLMが迷わないよう、意図ごとに分類して定義
  */
 export const ActionTypeEnum = z.enum([
   // --- Basic Interaction ---
-  'click', // 通常の左クリック
-  'dblclick', // ダブルクリック
-  'right_click', // 右クリック (コンテキストメニュー用)
-  'hover', // マウスホバー (ツールチップ表示など)
-  'focus', // フォーカスを当てる
+  'click',
+  'dblclick',
+  'right_click',
+  'hover',
+  'focus',
 
   // --- Input / Form ---
-  'fill', // テキスト入力 (高速、標準的)
-  'type', // キーを1つずつタイプ (検索サジェスト発火など、人間らしい入力が必要な場合)
-  'clear', // 入力欄の消去
-  'check', // チェックボックス/ラジオボタンをオン
-  'uncheck', // チェックボックスをオフ
-  'select_option', // ドロップダウン(selectタグ)の選択
-  'upload', // ファイルアップロード (setInputFiles)
+  'fill',
+  'type',
+  'clear',
+  'check',
+  'uncheck',
+  'select_option',
+  'upload',
 
   // --- Advanced Interaction ---
-  'drag_and_drop', // ドラッグ＆ドロップ (targetId から targetId2 へ)
-  'keypress', // 特定のキー押下 (Enter, Escape, ArrowDown, Control+C 等)
+  'drag_and_drop',
+  'keypress',
 
-  // --- Navigation / Page ---
-  'navigate', // URL遷移
-  'reload', // ページ再読み込み
-  'go_back', // 戻る
-  'scroll', // スクロール (要素指定またはページ全体)
+  // --- Navigation / Page / Tab ---
+  'navigate',
+  'reload',
+  'go_back',
+  'scroll',
+  'switch_tab', // [New] タブ切り替え
+  'close_tab', // [New] タブを閉じる
+
+  // --- Wait & Dialog ---
+  'wait_for_element', // [New] 特定の要素が出現するのを待つ
+  'handle_dialog', // [New] アラートや確認ダイアログの処理
 
   // --- Assertion (Verification) ---
-  'assert_visible', // 要素が表示されているか
-  'assert_text', // 要素のテキストが value を含むか
-  'assert_value', // inputのvalueが value と一致するか
-  'assert_url', // URLが value を含むか
+  'assert_visible',
+  'assert_text',
+  'assert_value',
+  'assert_url',
 
   // --- Meta ---
-  'finish', // タスク完了
+  'finish',
 ]);
 
 export type ActionType = z.infer<typeof ActionTypeEnum>;
 
 /**
- * LLMが生成するアクションプラン (Schema Definition)
- * 思考(thought)とアクション(actionType, targetId)を構造化します。
+ * LLMが生成するアクションプラン
  */
 export const ActionSchema = z.object({
-  thought: z.string().describe('現在の状況分析と、なぜこのアクションを選択したかの思考プロセス'),
+  thought: z
+    .string()
+    .describe('現在の状況分析、なぜこのアクションを選択したかの思考プロセス。簡潔に記述すること。'),
 
   actionType: ActionTypeEnum.describe('実行するPlaywrightアクションの種類'),
 
   targetId: z
     .string()
     .optional()
-    .describe('操作対象の要素のVirtual ID (例: "12")。navigate/finish時は不要'),
+    .describe('操作対象の要素のVirtual ID (例: "btn-login-1")。navigate/finish時は不要'),
 
   targetId2: z
     .string()
@@ -73,7 +98,8 @@ export const ActionSchema = z.object({
         '- keypress: キー名 (Enter, Tab, Control+C)\n' +
         '- navigate: URL\n' +
         '- upload: ファイルパス\n' +
-        '- assert_text/value/url: 期待する値'
+        '- switch_tab: タブのインデックス(0-based)またはタイトルの一部\n' +
+        '- handle_dialog: "accept" または "dismiss"'
     ),
 
   isFinished: z.boolean().describe('ゴールを達成し、タスクを終了すべきか'),
@@ -81,45 +107,53 @@ export const ActionSchema = z.object({
 
 export type ActionPlan = z.infer<typeof ActionSchema>;
 
+// --- DOM / State Definitions ---
+
+/**
+ * セレクタ候補
+ */
+export interface SelectorCandidates {
+  testId?: string;
+  role?: { role: string; name: string };
+  placeholder?: string;
+  text?: string;
+  label?: string;
+  // 属性ベースのセレクタなどを追加
+  altText?: string;
+  title?: string;
+}
+
 /**
  * システム内部で保持する要素コンテナ
- * DOMを汚さずに要素を特定・操作するための全情報を持つ
+ * Semantic ID導入に伴い、不変なIDと最新のHandleを管理する
  */
 export interface ElementContainer {
-  id: string;
+  id: string; // Semantic Hash ID
 
   // 操作用 (Playwrightの参照)
-  // メモリ上でDOM要素へのポインタを保持することで高速な操作を実現
   handle: ElementHandle;
   frame: Frame;
 
   // リカバリ & コード生成用メタデータ
-  // ネストされたiframeに対応するためのセレクタチェーン
   frameSelectorChain: string[];
-  xpath: string; // 最終手段のパス (Stale Element対策)
+  xpath: string; // 最終手段
 
-  // 事前計算されたセレクタ候補
-  // ブラウザ内で一意性が確認されたものを格納する
-  selectors: {
-    testId?: string; // 一意な data-testid
-    role?: { role: string; name: string }; // 一意な Role + Name
-    placeholder?: string; // 一意な Placeholder
-    text?: string; // 一意な Text
-    label?: string; // Associated Label
-  };
+  // セレクタ候補
+  selectors: SelectorCandidates;
 
   // LLM提示用
   description: string;
   tagName: string;
   isScrollable: boolean;
+  isInViewport: boolean; // 画面外判定用
 }
 
 /**
  * Observeの結果
  */
 export interface ObservationResult {
-  stateText: string; // LLMに渡すYAMLテキスト
-  elementMap: Map<string, ElementContainer>; // ID -> コンテナのマップ
+  stateText: string; // LLMに渡すテキスト表現
+  elementMap: Map<string, ElementContainer>; // ID -> コンテナ
 }
 
 /**
@@ -127,7 +161,8 @@ export interface ObservationResult {
  */
 export interface ExecutionResult {
   success: boolean;
-  generatedCode?: string; // テストファイルに書き込むための検証済みコード
+  generatedCode?: string; // 検証済みコード
   error?: string;
-  retryable: boolean; // リトライによって解決する可能性があるエラーか
+  retryable: boolean;
+  userGuidance?: string; // AIへのフィードバック（エラー翻訳）
 }

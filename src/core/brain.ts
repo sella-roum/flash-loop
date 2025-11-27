@@ -1,75 +1,53 @@
+/**
+ * src/core/brain.ts
+ */
 import { cerebras } from '@ai-sdk/cerebras';
 import { generateObject } from 'ai';
 import { ActionSchema, ActionPlan } from '../types';
 
-/**
- * LLMを使用して次のアクションを決定する頭脳クラス
- */
 export class Brain {
-  // Cerebras Llama 3.1 70B モデルを使用 (高速推論)
   private model = cerebras(process.env.LLM_MODEL_NAME || 'llama3.1-70b');
 
-  /**
-   * 現在の状態と履歴から、次のアクションを推論します。
-   *
-   * @param goal ユーザーのゴール
-   * @param state 現在のページ状態（YAML形式）
-   * @param history 過去のアクション履歴
-   */
-  async think(goal: string, state: string, history: string[]): Promise<ActionPlan> {
+  async think(
+    goal: string,
+    state: string,
+    history: string[],
+    lastError?: string
+  ): Promise<ActionPlan> {
     const systemPrompt = `
-You are FlashLoop, an expert automated browser agent.
-Your goal is to achieve the user's objective on the web page.
+You are FlashLoop, a resilient browser automation agent.
+Your goal is to achieve the user's objective by operating the browser.
 
-# INSTRUCTIONS
-1. Analyze the 'Current State' (YAML format) and 'Goal'.
-2. Determine the next single step to take.
-3. **Format**: The state uses the format '- <tag> "Description" [ID: x]'.
-4. **Target**: Use the [ID: x] to specify the 'targetId'.
-5. **Scrolling**: If the target is not visible but you see a hint like "Scrollable" or "more items", use actionType: "scroll". If scrolling a specific container, use its ID. If general scrolling, leave targetId empty.
-6. **Input**: For 'fill' or 'type', specify the text in 'value'.
-7. **Completion**: If the goal is fully achieved, set 'isFinished' to true.
+# STRATEGY
+1. **Context**: Check the "Active Tab". If the goal requires a new tab or popup, look for it.
+2. **Visibility**: If you cannot see the target, it might be off-screen. Use 'scroll'.
+3. **Wait**: If the page is loading or you expect a change, use 'wait_for_element' or check 'assert_visible'.
+4. **Error Recovery**: If "Previous Error" exists, analyze the advice and try a DIFFERENT approach (e.g., scroll first, close modal, use different element).
 
-# ACTION TYPES
-- Basic: click, dblclick, right_click, hover, focus
-- Input: fill, type, clear, check, uncheck, select_option, upload
-- Advanced: drag_and_drop, keypress
-- Page: navigate, scroll, go_back, reload
-- Verify: assert_visible, assert_text, assert_value, assert_url
-- Meta: finish
-
-# OUTPUT FORMAT
-Return a JSON object matching the ActionSchema.
+# SCHEMA
+Return a JSON object matching ActionSchema.
 `;
 
-    try {
-      const { object } = await generateObject({
-        model: this.model,
-        schema: ActionSchema,
-        system: systemPrompt,
-        messages: [
-          {
-            role: 'user',
-            content: `
+    const userContent = `
 Goal: ${goal}
-
-Current State (Interactive Elements):
+${lastError ? `\n⚠️ PREVIOUS ERROR:\n${lastError}\n(Please fix your strategy based on this error.)\n` : ''}
+Current State:
 ${state}
 
-History of Actions:
-${history.length > 0 ? history.join('\n') : '(No history yet)'}
+History:
+${history.slice(-5).join('\n')}
 
 Next Action:
-`,
-          },
-        ],
-        temperature: 0, // 決定論的な動作を優先
-      });
+`;
 
-      return object;
-    } catch (error) {
-      console.error('LLM Generation Error:', error);
-      throw new Error(`Failed to generate action plan for goal: "${goal}"`, { cause: error });
-    }
+    const { object } = await generateObject({
+      model: this.model,
+      schema: ActionSchema,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userContent }],
+      temperature: 0,
+    });
+
+    return object;
   }
 }

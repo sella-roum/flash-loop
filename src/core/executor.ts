@@ -1,7 +1,7 @@
 /**
  * src/core/executor.ts
  * AIの意思決定を実行に移す。
- * v3.0: 堅牢性を最優先し、Locatorの一意性を検証してから実行する (Double-Check Strategy)
+ * 堅牢性を最優先し、Locatorの一意性を検証してから実行する (Double-Check Strategy)
  */
 import { Page, Locator, FrameLocator } from 'playwright';
 import { expect } from '@playwright/test';
@@ -30,11 +30,21 @@ export class Executor {
         // 実行
         await contextManager.switchToTab(isNaN(index) ? target : index);
 
-        // [Review Fix] コメントのみではなく、実行可能なコードを生成する
-        let generatedCode = `// Switch tab to "${target}" (Title matching logic not supported in codegen yet)`;
+        let generatedCode = '';
         if (!isNaN(index)) {
-          // インデックス指定の場合は context.pages() を使用したコードを生成
+          // インデックス指定の場合
           generatedCode = `await page.context().pages()[${index}].bringToFront();`;
+        } else {
+          // 文字列（タイトル/URL）指定の場合のスニペット生成
+          const escapedTarget = target.replace(/'/g, "\\'");
+          generatedCode = `
+// Switch to tab matching "${escapedTarget}"
+for (const p of page.context().pages()) {
+  if (p.url().includes('${escapedTarget}') || (await p.title()).includes('${escapedTarget}')) {
+    await p.bringToFront();
+    break;
+  }
+}`.trim();
         }
 
         return {
@@ -72,7 +82,8 @@ export class Executor {
         await contextManager.handleDialog(action);
         return {
           success: true,
-          generatedCode: `page.once('dialog', dialog => dialog.${action}());`,
+          generatedCode: `// Note: Simple dialog handling. (Runtime uses ContextManager for auto-dismiss)
+page.once('dialog', dialog => dialog.${action}());`,
           retryable: false,
         };
       }
@@ -137,13 +148,14 @@ export class Executor {
       const translatedError = ErrorTranslator.translate(error);
       const msg = String(error);
 
-      // [Review Fix] エラータイプに基づいて retryable を動的に判定
-      // 引数不足、未サポートアクション、メモリ内にIDがない等の致命的エラーはリトライしない
       const isFatal =
         msg.includes('requires a target') ||
         msg.includes('requires targetId') ||
+        msg.includes('requires a URL') ||
         msg.includes('Unsupported action') ||
-        msg.includes('not found in memory');
+        msg.includes('not found in memory') ||
+        msg.includes('not found') || // "Target ... not found" も含む
+        msg.includes('Target ID is missing');
 
       return {
         success: false,
@@ -170,21 +182,20 @@ export class Executor {
     if (s.testId) {
       candidates.push({
         get: () => context.getByTestId(s.testId!),
-        // 修正: エスケープ処理を追加
         code: `.getByTestId('${s.testId.replace(/'/g, "\\'")}')`,
       });
     }
-    if (s.role) {
-      const role = s.role!.role as Parameters<Page['getByRole']>[0];
+    if (s.role && s.role.name) {
+      const role = s.role.role as Parameters<Page['getByRole']>[0];
+      const name = s.role.name;
       candidates.push({
-        get: () => context.getByRole(role, { name: s.role!.name, exact: true }),
-        code: `.getByRole('${s.role!.role}', { name: '${s.role!.name.replace(/'/g, "\\'")}', exact: true })`,
+        get: () => context.getByRole(role, { name: name, exact: true }),
+        code: `.getByRole('${role}', { name: '${name.replace(/'/g, "\\'")}', exact: true })`,
       });
     }
     if (s.placeholder) {
       candidates.push({
         get: () => context.getByPlaceholder(s.placeholder!),
-        // エスケープ処理を追加
         code: `.getByPlaceholder('${s.placeholder.replace(/'/g, "\\'")}')`,
       });
     }
@@ -310,7 +321,7 @@ export class Executor {
 
   private buildContextCode(chain: string[]): string {
     let code = 'page';
-    for (const sel of chain) code += `.frameLocator('${sel}')`;
+    for (const sel of chain) code += `.frameLocator('${sel.replace(/'/g, "\\'")}')`;
     return code;
   }
 
@@ -337,7 +348,6 @@ export class Executor {
       case 'uncheck':
         return `await ${selectorCode}.uncheck();`;
 
-      // [Review Fix] upload: カンマ区切りの複数ファイル対応
       case 'upload': {
         const rawVal = plan.value || '';
         if (rawVal.includes(',')) {
@@ -353,13 +363,11 @@ export class Executor {
       case 'keypress':
         return `await ${selectorCode}.press(${val});`;
 
-      // [Review Fix] focus: ケース追加
       case 'focus':
         return `await ${selectorCode}.focus();`;
 
-      // [Review Fix] select_option: ケース追加 (Label優先)
       case 'select_option':
-        return `await ${selectorCode}.selectOption({ label: ${val} });`;
+        return `await ${selectorCode}.selectOption({ label: ${val} }).catch(() => ${selectorCode}.selectOption({ value: ${val} }));`;
 
       case 'assert_visible':
         return `await expect(${selectorCode}).toBeVisible();`;
@@ -374,7 +382,6 @@ export class Executor {
         return `await ${selectorCode}.dragTo(${auxCode || '/* Unknown Target */'});`;
 
       case 'scroll':
-        // 修正: scrollアクションのコード生成を追加
         return `await ${selectorCode}.scrollIntoViewIfNeeded();`;
 
       default:

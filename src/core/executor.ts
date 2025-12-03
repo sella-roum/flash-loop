@@ -8,7 +8,6 @@ import { expect } from '@playwright/test';
 import { ActionPlan, ExecutionResult, ElementContainer } from '../types';
 import { ContextManager } from './context-manager';
 import { ErrorTranslator } from './error-translator';
-import { SmartWaiter } from './smart-waiter';
 
 export class Executor {
   /**
@@ -137,8 +136,9 @@ page.once('dialog', dialog => dialog.${action}());`,
       // 2. Execute Action
       await this.performLocatorAction(locator, plan, page, auxLocator);
 
-      // 3. Stabilization SmartWaiter を使用
-      await this.waitForStabilization(page);
+      // 3. Stabilization
+      // Observer.captureState 側で SmartWaiter を呼んでいるため、ここでの待機は削除
+      // レイテンシを削減し、二重待機を防ぐ
 
       return {
         success: true,
@@ -383,10 +383,5 @@ page.once('dialog', dialog => dialog.${action}());`,
       default:
         return `await ${selectorCode}.${plan.actionType}(${val});`;
     }
-  }
-
-  private async waitForStabilization(page: Page) {
-    // networkidle に依存しないため、SPAでもタイムアウトしにくくなる
-    await SmartWaiter.wait(page, 300, 2000);
   }
 }

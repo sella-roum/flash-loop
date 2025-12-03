@@ -10,7 +10,7 @@ import { HistoryManager } from './history';
 import { ContextManager } from './context-manager';
 import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
-import { FlashLoopOptions, ActionType } from '../types';
+import { FlashLoopOptions, ActionType, ActionTypeEnum } from '../types';
 import chalk from 'chalk';
 
 // Inquirerの型定義を動的インポートの型から抽出
@@ -80,8 +80,8 @@ export class FlashLoop {
       try {
         const imported = await import('inquirer');
         inquirer = imported.default;
-      } catch (e) {
-        console.warn('Inquirer not found. Interactive mode disabled.', e);
+      } catch {
+        this.logger.fail('Inquirer not found. Interactive mode disabled.');
         this.options.interactive = false;
       }
     }
@@ -106,6 +106,7 @@ export class FlashLoop {
         lastError
       );
 
+      // インタラクティブモードでない場合のみ、ここで終了判定
       if (plan.isFinished && !this.options.interactive) break;
 
       this.logger.action(plan.actionType, plan.targetId || 'page');
@@ -115,9 +116,10 @@ export class FlashLoop {
         this.logger.stop(); // スピナー一時停止
 
         // Keep-Alive: ユーザー入力待ちの間にセッションが切れないようにPing
+        // 間隔を60秒に緩和
         const keepAlive = setInterval(() => {
           activePage.evaluate('document.title').catch(() => {});
-        }, 30000);
+        }, 60000);
 
         try {
           console.log(chalk.yellow(`\n🤖 AI Proposal:`));
@@ -131,9 +133,8 @@ export class FlashLoop {
           if (plan.value) console.log(`Value:       ${chalk.cyan(plan.value)}`);
 
           // 選択肢のプロンプト
-          // ジェネリクスを指定すると厳密な型チェックでエラーになることがあるため、
-          // 戻り値をキャストする形をとる
-          const answer = (await inquirer.prompt([
+          // ジェネリクスを指定して型安全に回答を取得
+          const answer = await inquirer.prompt<{ choice: string }>([
             {
               type: 'list',
               name: 'choice',
@@ -145,7 +146,7 @@ export class FlashLoop {
                 { name: '🛑 Quit', value: 'quit' },
               ],
             },
-          ])) as { choice: string };
+          ]);
 
           const choice = answer.choice;
 
@@ -157,21 +158,13 @@ export class FlashLoop {
 
           if (choice === 'override') {
             // オーバーライド用プロンプト
-            // ここでもジェネリクスを外し、as OverrideAnswers で型安全性を確保する
-            const override = (await inquirer.prompt([
+            const override = await inquirer.prompt<OverrideAnswers>([
               {
                 type: 'list',
                 name: 'actionType',
                 message: 'Action Type:',
-                choices: [
-                  'click',
-                  'fill',
-                  'scroll',
-                  'wait_for_element',
-                  'navigate',
-                  'finish',
-                  'switch_tab',
-                ],
+                // ActionTypeEnum.options を使用して動的に選択肢を生成 (Source of Truth)
+                choices: ActionTypeEnum.options,
                 default: plan.actionType,
               },
               {
@@ -190,7 +183,7 @@ export class FlashLoop {
                   ans.actionType !== undefined &&
                   ['fill', 'type', 'navigate', 'scroll', 'switch_tab'].includes(ans.actionType),
               },
-            ])) as OverrideAnswers;
+            ]);
 
             plan.actionType = override.actionType;
             plan.targetId = override.targetId || undefined;
@@ -200,14 +193,12 @@ export class FlashLoop {
           clearInterval(keepAlive);
         }
 
-        // isFinished が手動で選ばれた場合の処理
-        if (plan.actionType === 'finish') break;
+        // ユーザーがfinishを選択、または既にプランが完了している場合
+        if (plan.actionType === 'finish' || plan.isFinished) break;
 
         this.logger.start('Executing...');
       }
       // -------------------------
-
-      if (plan.isFinished) break;
 
       // 3. Execute (Locator-First)
       const result = await this.executor.execute(plan, this.contextManager, elementMap);
@@ -229,7 +220,7 @@ export class FlashLoop {
           if (this.options.interactive) {
             console.log(
               chalk.red(
-                '\n❌ Non-retryable error occurred. Stopping unless you override in next step.'
+                '\n❌ Non-retryable error occurred. You must override the action to continue.'
               )
             );
           } else {

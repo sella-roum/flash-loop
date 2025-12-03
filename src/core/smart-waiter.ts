@@ -19,6 +19,12 @@ export class SmartWaiter {
       await page.evaluate(
         ({ duration, timeout }) => {
           return new Promise<void>((resolve) => {
+            // document.body がまだない場合は何もせず終了（ロード途中など）
+            if (!document.body) {
+              resolve();
+              return;
+            }
+
             let timer: number | undefined;
             const start = Date.now();
 
@@ -51,6 +57,7 @@ export class SmartWaiter {
 
               // 最大時間を超えたら強制終了（Resolveして進む）
               if (Date.now() - start > timeout) {
+                if (timer) clearTimeout(timer);
                 observer.disconnect();
                 resolve();
                 return;

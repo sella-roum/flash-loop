@@ -35,15 +35,15 @@ export class ContextManager {
     // 新規ページの監視ハンドラ定義
     this.onPageHandler = async (page: Page) => {
       // 1. フィルタリング (簡易的な広告/トラッカー対策)
+      // URLが確定するまで少し待つ（about:blank回避のため）
+      await page.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {});
+
       const url = page.url();
-      if (this.isIrrelevantUrl(url)) {
+      if (this.isIrrelevantUrl(url) && url !== 'about:blank') {
         console.log(`🚫 Ignoring/Closing popup: ${url}`);
-        // 広告などの場合は自動的に閉じることを検討しても良いが、
-        // 誤判定のリスクがあるため、ここではstackに追加せずログのみとするか、
-        // 明確なゴミなら閉じる
-        if (url === 'about:blank') {
-          // about:blankはロード待ちの可能性もあるため監視対象には入れる
-        }
+        // 明らかな広告/トラッカーはスタックに載せず閉じる
+        await page.close().catch(() => {});
+        return;
       }
 
       console.log('✨ New tab detected. Auto-focusing...');
@@ -54,9 +54,8 @@ export class ContextManager {
       // イベントリスナー設定
       this.setupPageListeners(page);
 
-      // 2. オートフォーカス (ロードを少し待つ)
+      // 2. オートフォーカス
       try {
-        await page.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {});
         await page.bringToFront();
 
         // スタック管理更新

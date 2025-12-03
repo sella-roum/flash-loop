@@ -8,6 +8,7 @@ import { expect } from '@playwright/test';
 import { ActionPlan, ExecutionResult, ElementContainer } from '../types';
 import { ContextManager } from './context-manager';
 import { ErrorTranslator } from './error-translator';
+import { SmartWaiter } from './smart-waiter';
 
 export class Executor {
   /**
@@ -136,7 +137,7 @@ page.once('dialog', dialog => dialog.${action}());`,
       // 2. Execute Action
       await this.performLocatorAction(locator, plan, page, auxLocator);
 
-      // 3. Stabilization
+      // 3. Stabilization SmartWaiter を使用
       await this.waitForStabilization(page);
 
       return {
@@ -266,7 +267,6 @@ page.once('dialog', dialog => dialog.${action}());`,
         await locator.uncheck();
         break;
       case 'upload':
-        // 修正: カンマ区切りで複数ファイル対応
         {
           const files = val.includes(',') ? val.split(',').map((f) => f.trim()) : val;
           await locator.setInputFiles(files);
@@ -294,7 +294,6 @@ page.once('dialog', dialog => dialog.${action}());`,
         await expect(locator).toHaveValue(val);
         break;
       case 'assert_url':
-        // シンプルなURLチェックに変更（過剰なRegExpエスケープを回避）
         await expect(page).toHaveURL(val);
         break;
 
@@ -351,12 +350,9 @@ page.once('dialog', dialog => dialog.${action}());`,
       case 'upload': {
         const rawVal = plan.value || '';
         if (rawVal.includes(',')) {
-          // 'file1.png', 'file2.png' -> "'file1.png', 'file2.png'"
-          // 配列リテラルとしてコード生成
           const files = rawVal.split(',').map((f) => `'${f.trim().replace(/'/g, "\\'")}'`);
           return `await ${selectorCode}.setInputFiles([${files.join(', ')}]);`;
         }
-        // 単一ファイル
         return `await ${selectorCode}.setInputFiles(${val});`;
       }
 
@@ -385,19 +381,12 @@ page.once('dialog', dialog => dialog.${action}());`,
         return `await ${selectorCode}.scrollIntoViewIfNeeded();`;
 
       default:
-        // 引数があるかわからないため、安全策としてvalを入れているが、
-        // 上記で主要なアクションはカバーされているはず
         return `await ${selectorCode}.${plan.actionType}(${val});`;
     }
   }
 
   private async waitForStabilization(page: Page) {
-    try {
-      await page.waitForLoadState('domcontentloaded');
-      // SPA対応: 短い networkidle も待機
-      await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => {});
-    } catch {
-      // ignore error (timeout etc)
-    }
+    // networkidle に依存しないため、SPAでもタイムアウトしにくくなる
+    await SmartWaiter.wait(page, 300, 2000);
   }
 }

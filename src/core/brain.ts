@@ -24,6 +24,16 @@ Your goal is to achieve the user's objective by operating the browser.
 3. **Wait**: If the page is loading or you expect a change, use 'wait_for_element' or check 'assert_visible'.
 4. **Error Recovery**: If "Previous Error" exists, analyze the advice and try a DIFFERENT approach (e.g., scroll first, close modal, use different element).
 
+# ADAPTIVE PLANNING
+1. Always maintain a high-level plan in the \`plan\` object.
+2. **Reality over Plan:** If the current page does not match your plan (e.g., unexpected login screen, popup), ABANDON the old plan and adapt immediately.
+3. Keep \`remainingSteps\` concise (next 2-3 major steps only).
+
+# MULTI-TAB HANDLING
+- If context info says "New tab focused", verify if it is the correct page for your goal.
+- If it is an ad or irrelevant, use 'close_tab'.
+- If you finished a task in a child tab, use 'close_tab' to return to the parent.
+
 # SCHEMA
 Return a JSON object matching ActionSchema.
 `;

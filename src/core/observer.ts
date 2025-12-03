@@ -4,7 +4,7 @@
  */
 import { Page, Frame, ElementHandle } from 'playwright';
 import { ObservationResult, ElementContainer, SelectorCandidates } from '../types';
-import { DOM_WAIT_TIMEOUT_MS } from '../constants';
+import { SmartWaiter } from './smart-waiter';
 
 // ブラウザ内で生成・返却されるメタデータの型定義
 interface ElementMetadataInfo {
@@ -47,7 +47,8 @@ export class Observer {
    * 現在のページ状態をキャプチャし、永続マップを更新して返す
    */
   async captureState(page: Page): Promise<ObservationResult> {
-    await this.waitForStability(page);
+    // SmartWaiter を使用してDOM安定化を待機
+    await SmartWaiter.wait(page, 300, 2000);
 
     const currentScanIds = new Set<string>();
     const yamlLines: string[] = [];
@@ -146,15 +147,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
 `;
 
     return { stateText, elementMap: this.persistentElementMap };
-  }
-
-  private async waitForStability(page: Page) {
-    try {
-      await page.waitForLoadState('domcontentloaded', { timeout: DOM_WAIT_TIMEOUT_MS });
-      await page.waitForLoadState('networkidle', { timeout: 500 }).catch(() => {});
-    } catch {
-      /* ignore */
-    }
   }
 
   private async scanFrame(frame: Frame) {
@@ -309,7 +301,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
         if (inputType) attributes['type'] = inputType;
         if (finalRole) attributes['role'] = finalRole;
 
-        // name属性の収集を追加
         const nameAttr = el.getAttribute('name');
         if (nameAttr) attributes['name'] = nameAttr;
 
@@ -338,7 +329,6 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
 
     for (const prop of properties.values()) {
       const itemHandle = prop;
-      // rawHandle の確実な dispose のための try-finally
       let rawHandle;
       try {
         rawHandle = await itemHandle.getProperty('element');
@@ -350,10 +340,8 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
         if (elementHandle) {
           items.push({ handle: elementHandle, metadata: metadata as ElementMetadataInfo });
         }
-        // metadataHandleは単純なJSON値なのでここで明示的にdisposeしなくてもGC対象だが念のため
         await metadataHandle.dispose();
       } finally {
-        // rawHandleは必ずdisposeする（asElementでハンドルが複製されているため、元のプロパティハンドルは不要）
         if (rawHandle) await rawHandle.dispose();
         await itemHandle.dispose();
       }
@@ -386,9 +374,7 @@ ${yamlLines.length > 0 ? yamlLines.join('\n') : '(No interactive elements found 
       meta.attributes['role'] || '',
       meta.attributes['type'] || '',
       meta.selectors.placeholder || '',
-      // name属性を優先使用（selectors.labelはnameとは異なる概念のため、まずはname属性自体を信頼する）
       meta.attributes['name'] || meta.selectors.label || '',
-      // TextContentから数値を除去して安定性を向上させる
       (meta.textContent || '').replace(/\d+/g, '').slice(0, 20),
     ];
 

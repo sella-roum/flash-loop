@@ -10,7 +10,20 @@ import { HistoryManager } from './history';
 import { ContextManager } from './context-manager';
 import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
-import { FlashLoopOptions } from '../types';
+import { FlashLoopOptions, ActionType } from '../types';
+import chalk from 'chalk';
+
+// Inquirerの型定義を動的インポートの型から抽出
+// inquirer v9 (ESM) の default export の型を取得する
+type InquirerModule = typeof import('inquirer');
+type InquirerInstance = InquirerModule['default'];
+
+// インタラクティブモードのオーバーライド用回答型
+interface OverrideAnswers {
+  actionType: ActionType;
+  targetId?: string;
+  value?: string;
+}
 
 export class FlashLoop {
   private browser: Browser | null = null;
@@ -61,6 +74,18 @@ export class FlashLoop {
     const MAX_STEPS = this.options.maxSteps || 20;
     let lastError: string | undefined = undefined;
 
+    // Inquirer の動的インポート（インタラクティブモード用）
+    let inquirer: InquirerInstance | undefined;
+    if (this.options.interactive) {
+      try {
+        const imported = await import('inquirer');
+        inquirer = imported.default;
+      } catch (e) {
+        console.warn('Inquirer not found. Interactive mode disabled.', e);
+        this.options.interactive = false;
+      }
+    }
+
     while (step < MAX_STEPS) {
       step++;
       const activePage = this.contextManager.getActivePage();
@@ -81,9 +106,108 @@ export class FlashLoop {
         lastError
       );
 
-      if (plan.isFinished) break;
+      if (plan.isFinished && !this.options.interactive) break;
 
       this.logger.action(plan.actionType, plan.targetId || 'page');
+
+      // --- Interactive Mode ---
+      if (this.options.interactive && inquirer) {
+        this.logger.stop(); // スピナー一時停止
+
+        // Keep-Alive: ユーザー入力待ちの間にセッションが切れないようにPing
+        const keepAlive = setInterval(() => {
+          activePage.evaluate('document.title').catch(() => {});
+        }, 30000);
+
+        try {
+          console.log(chalk.yellow(`\n🤖 AI Proposal:`));
+          if (plan.plan) {
+            console.log(`Plan Status: ${chalk.cyan(plan.plan.currentStatus)}`);
+            console.log(`Remaining:   ${plan.plan.remainingSteps.join(' -> ')}`);
+          }
+          console.log(`Thought:     ${chalk.gray(plan.thought)}`);
+          console.log(`Action:      ${chalk.bold.green(plan.actionType)}`);
+          console.log(`Target:      ${plan.targetId || 'Page/Context'}`);
+          if (plan.value) console.log(`Value:       ${chalk.cyan(plan.value)}`);
+
+          // 選択肢のプロンプト
+          // ジェネリクスを指定すると厳密な型チェックでエラーになることがあるため、
+          // 戻り値をキャストする形をとる
+          const answer = (await inquirer.prompt([
+            {
+              type: 'list',
+              name: 'choice',
+              message: 'What would you like to do?',
+              choices: [
+                { name: '✅ Execute', value: 'execute' },
+                { name: '🛠️  Override (Edit Action)', value: 'override' },
+                { name: '⏭️  Skip', value: 'skip' },
+                { name: '🛑 Quit', value: 'quit' },
+              ],
+            },
+          ])) as { choice: string };
+
+          const choice = answer.choice;
+
+          if (choice === 'quit') break;
+          if (choice === 'skip') {
+            clearInterval(keepAlive);
+            continue;
+          }
+
+          if (choice === 'override') {
+            // オーバーライド用プロンプト
+            // ここでもジェネリクスを外し、as OverrideAnswers で型安全性を確保する
+            const override = (await inquirer.prompt([
+              {
+                type: 'list',
+                name: 'actionType',
+                message: 'Action Type:',
+                choices: [
+                  'click',
+                  'fill',
+                  'scroll',
+                  'wait_for_element',
+                  'navigate',
+                  'finish',
+                  'switch_tab',
+                ],
+                default: plan.actionType,
+              },
+              {
+                type: 'input',
+                name: 'targetId',
+                message: 'Target ID (leave empty for page/context):',
+                default: plan.targetId,
+              },
+              {
+                type: 'input',
+                name: 'value',
+                message: 'Value (text, url, etc.):',
+                default: plan.value,
+                // whenコールバックの引数を適切に型付け (any回避)
+                when: (ans: Partial<OverrideAnswers>) =>
+                  ans.actionType !== undefined &&
+                  ['fill', 'type', 'navigate', 'scroll', 'switch_tab'].includes(ans.actionType),
+              },
+            ])) as OverrideAnswers;
+
+            plan.actionType = override.actionType;
+            plan.targetId = override.targetId || undefined;
+            plan.value = override.value;
+          }
+        } finally {
+          clearInterval(keepAlive);
+        }
+
+        // isFinished が手動で選ばれた場合の処理
+        if (plan.actionType === 'finish') break;
+
+        this.logger.start('Executing...');
+      }
+      // -------------------------
+
+      if (plan.isFinished) break;
 
       // 3. Execute (Locator-First)
       const result = await this.executor.execute(plan, this.contextManager, elementMap);
@@ -102,14 +226,20 @@ export class FlashLoop {
         lastError = result.userGuidance || result.error;
 
         if (!result.retryable) {
-          break;
+          if (this.options.interactive) {
+            console.log(
+              chalk.red(
+                '\n❌ Non-retryable error occurred. Stopping unless you override in next step.'
+              )
+            );
+          } else {
+            break;
+          }
         }
       }
     }
 
     await this.generator.finish();
-    // ブラウザのクローズは cleanup() に委譲するか、ここで行う
-    // CLIモードの自動終了のためここでも呼ぶ
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
@@ -120,7 +250,6 @@ export class FlashLoop {
 
   /**
    * リソースのクリーンアップを行う
-   * Libraryモードなどで外部から明示的に呼ばれる場合がある
    */
   async cleanup(): Promise<void> {
     if (this.browser) {
@@ -131,6 +260,5 @@ export class FlashLoop {
       }
       this.browser = null;
     }
-    // 将来的にイベントリスナーの解除などが必要になればここに追記
   }
 }

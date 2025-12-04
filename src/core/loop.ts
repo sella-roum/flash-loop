@@ -10,7 +10,7 @@ import { HistoryManager } from './history';
 import { ContextManager } from './context-manager';
 import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
-import { FlashLoopOptions, ActionType, ActionTypeEnum } from '../types';
+import { FlashLoopOptions, ActionType, ActionTypeEnum, VALUE_REQUIRED_ACTIONS } from '../types';
 import chalk from 'chalk';
 
 // Inquirerの型定義を動的インポートの型から抽出
@@ -73,6 +73,7 @@ export class FlashLoop {
     let step = 0;
     const MAX_STEPS = this.options.maxSteps || 20;
     let lastError: string | undefined = undefined;
+    let forceOverride = false; // 再試行不可能なエラー発生時の強制介入フラグ
 
     // Inquirer の動的インポート（インタラクティブモード用）
     let inquirer: InquirerInstance | undefined;
@@ -80,8 +81,9 @@ export class FlashLoop {
       try {
         const imported = await import('inquirer');
         inquirer = imported.default;
-      } catch {
+      } catch (e) {
         this.logger.fail('Inquirer not found. Interactive mode disabled.');
+        console.debug('Inquirer import error:', e);
         this.options.interactive = false;
       }
     }
@@ -132,21 +134,42 @@ export class FlashLoop {
           console.log(`Target:      ${plan.targetId || 'Page/Context'}`);
           if (plan.value) console.log(`Value:       ${chalk.cyan(plan.value)}`);
 
+          if (forceOverride) {
+            console.log(
+              chalk.red.bold(
+                '\n⚠️  Previous error was not retryable. You must override the action or quit.'
+              )
+            );
+          }
+
+          // 基本選択肢
+          const choices = [
+            { name: '✅ Execute', value: 'execute' },
+            { name: '🛠️  Override (Edit Action)', value: 'override' },
+            { name: '⏭️  Skip', value: 'skip' },
+            { name: '🛑 Quit', value: 'quit' },
+          ];
+
+          // forceOverrideなら 'Execute' を選択肢から除外する
+          const filteredChoices = forceOverride
+            ? choices.filter((c) => c.value !== 'execute')
+            : choices;
+
           // 選択肢のプロンプト
           // ジェネリクスを指定して型安全に回答を取得
           const answer = await inquirer.prompt<{ choice: string }>([
             {
               type: 'list',
               name: 'choice',
-              message: 'What would you like to do?',
-              choices: [
-                { name: '✅ Execute', value: 'execute' },
-                { name: '🛠️  Override (Edit Action)', value: 'override' },
-                { name: '⏭️  Skip', value: 'skip' },
-                { name: '🛑 Quit', value: 'quit' },
-              ],
+              message: forceOverride
+                ? 'Action Required (Non-retryable Error):'
+                : 'What would you like to do?',
+              choices: filteredChoices,
             },
           ]);
+
+          // フラグは一度介入を求めたらリセットする
+          if (forceOverride) forceOverride = false;
 
           const choice = answer.choice;
 
@@ -178,10 +201,9 @@ export class FlashLoop {
                 name: 'value',
                 message: 'Value (text, url, etc.):',
                 default: plan.value,
-                // whenコールバックの引数を適切に型付け (any回避)
+                // 定数リストを使用して値を必要とするアクションかどうかを判定
                 when: (ans: Partial<OverrideAnswers>) =>
-                  ans.actionType !== undefined &&
-                  ['fill', 'type', 'navigate', 'scroll', 'switch_tab'].includes(ans.actionType),
+                  ans.actionType !== undefined && VALUE_REQUIRED_ACTIONS.includes(ans.actionType),
               },
             ]);
 
@@ -207,6 +229,7 @@ export class FlashLoop {
         this.logger.success(`Success: ${plan.thought}`);
         this.history.add(`SUCCESS: ${plan.actionType}`);
         lastError = undefined;
+        forceOverride = false; // 成功したのでフラグは確実にリセット
 
         if (result.generatedCode) {
           await this.generator.appendCode(result.generatedCode, plan.thought);
@@ -220,9 +243,11 @@ export class FlashLoop {
           if (this.options.interactive) {
             console.log(
               chalk.red(
-                '\n❌ Non-retryable error occurred. You must override the action to continue.'
+                '\n❌ Non-retryable error occurred. Next step will require manual override.'
               )
             );
+            forceOverride = true; // 次のイテレーションで介入を強制
+            // breakせずにループ継続 -> Brainが再考 -> InteractiveでOverride強制というフローになる
           } else {
             break;
           }

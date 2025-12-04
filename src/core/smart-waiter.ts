@@ -32,7 +32,8 @@ export class SmartWaiter {
             const isNoisyMutation = (mutations: MutationRecord[]): boolean => {
               return mutations.every((m) => {
                 const target = m.target as Element;
-                if (!target) return false;
+                // ターゲットがない変更はノイズとして扱う (return true)
+                if (!target) return true;
 
                 // SVGアニメーション、動画、スピナーなどは無視
                 const tagName = target.tagName ? target.tagName.toLowerCase() : '';

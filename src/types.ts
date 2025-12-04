@@ -71,6 +71,25 @@ export const ActionTypeEnum = z.enum([
 export type ActionType = z.infer<typeof ActionTypeEnum>;
 
 /**
+ * 値(value)の入力を必須とするアクションタイプのリスト
+ * インタラクティブモードのOverrideプロンプト等で使用
+ */
+export const VALUE_REQUIRED_ACTIONS: ActionType[] = [
+  'fill',
+  'type',
+  'navigate',
+  'scroll',
+  'switch_tab',
+  'keypress',
+  'select_option',
+  'upload',
+  'assert_text',
+  'assert_value',
+  'assert_url',
+  'handle_dialog',
+];
+
+/**
  * LLMが生成するアクションプラン
  */
 export const ActionSchema = z.object({

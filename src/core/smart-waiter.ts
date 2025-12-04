@@ -5,6 +5,14 @@
  */
 import { Page } from 'playwright';
 
+/**
+ * 待機結果の詳細情報
+ */
+export interface WaitResult {
+  achieved: boolean; // 安定化に成功したか（falseの場合はタイムアウト）
+  duration: number; // 経過時間 (ms)
+}
+
 export class SmartWaiter {
   /**
    * DOMの変更が落ち着くまで待機する。
@@ -13,20 +21,22 @@ export class SmartWaiter {
    * @param page 対象のPlaywright Pageオブジェクト
    * @param stabilityDuration この期間(ms)変更がなければ「安定」とみなす
    * @param maxTimeout 最大待機時間(ms)。これを超えたら不安定でも次へ進む（ソフトタイムアウト）
+   * @returns 待機結果（安定化したか、経過時間）
    */
-  static async wait(page: Page, stabilityDuration = 300, maxTimeout = 2000): Promise<void> {
+  static async wait(page: Page, stabilityDuration = 300, maxTimeout = 2000): Promise<WaitResult> {
     try {
-      await page.evaluate(
+      return await page.evaluate(
         ({ duration, timeout }) => {
-          return new Promise<void>((resolve) => {
+          return new Promise<{ achieved: boolean; duration: number }>((resolve) => {
+            const start = Date.now();
+
             // document.body がまだない場合は何もせず終了（ロード途中など）
             if (!document.body) {
-              resolve();
+              resolve({ achieved: false, duration: 0 });
               return;
             }
 
             let timer: number | undefined;
-            const start = Date.now();
 
             // ノイズとなりうる要素（常に更新され続けるもの）を除外するためのチェック関数
             const isNoisyMutation = (mutations: MutationRecord[]): boolean => {
@@ -58,16 +68,16 @@ export class SmartWaiter {
 
               // 最大時間を超えたら強制終了（Resolveして進む）
               if (Date.now() - start > timeout) {
-                if (timer) clearTimeout(timer);
+                // NOTE: 直前でclearTimeout(timer)しているため、ここでのclearTimeoutは不要
                 observer.disconnect();
-                resolve();
+                resolve({ achieved: false, duration: Date.now() - start });
                 return;
               }
 
               // 変更があったのでタイマーをリセットし、再び stabilityDuration 待つ
               timer = window.setTimeout(() => {
                 observer.disconnect();
-                resolve();
+                resolve({ achieved: true, duration: Date.now() - start });
               }, duration);
             });
 
@@ -77,7 +87,7 @@ export class SmartWaiter {
             // 初期タイマー（最初から変化がない場合用）
             timer = window.setTimeout(() => {
               observer.disconnect();
-              resolve();
+              resolve({ achieved: true, duration: Date.now() - start });
             }, duration);
           });
         },
@@ -87,6 +97,7 @@ export class SmartWaiter {
       // 評価中にページ遷移が発生した場合などはエラーになるが、
       // 待機失敗として処理を止めず、警告を出して進む
       console.warn('[SmartWaiter] Wait logic interrupted (likely navigation):', e);
+      return { achieved: false, duration: 0 };
     }
   }
 }

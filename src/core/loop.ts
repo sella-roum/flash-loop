@@ -168,16 +168,17 @@ export class FlashLoop {
             },
           ]);
 
-          // フラグは一度介入を求めたらリセットする
-          if (forceOverride) forceOverride = false;
-
           const choice = answer.choice;
 
           if (choice === 'quit') break;
           if (choice === 'skip') {
             clearInterval(keepAlive);
+            // Skipの場合はフラグを維持する（AIが同じ過ちを犯したときのために強制状態を解かない）
             continue;
           }
+
+          // Overrideが選択された（または通常時にExecuteされた）場合はフラグをリセット
+          if (forceOverride) forceOverride = false;
 
           if (choice === 'override') {
             // オーバーライド用プロンプト

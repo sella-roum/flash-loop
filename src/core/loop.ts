@@ -13,8 +13,8 @@ import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
 import { FlashLoopOptions, ActionType, ActionTypeEnum, VALUE_REQUIRED_ACTIONS } from '../types';
 import chalk from 'chalk';
 
-// Inquirerの型定義を動的インポートの型から抽出
-// inquirer v9 (ESM) の default export の型を取得する
+// Inquirer (v13+) の型定義を動的インポートの型から抽出
+// ESM default export の型を取得する
 type InquirerModule = typeof import('inquirer');
 type InquirerInstance = InquirerModule['default'];
 
@@ -127,7 +127,9 @@ export class FlashLoop {
           console.log(chalk.yellow(`\n🤖 AI Proposal:`));
           if (plan.plan) {
             console.log(`Plan Status: ${chalk.cyan(plan.plan.currentStatus)}`);
-            console.log(`Remaining:   ${plan.plan.remainingSteps.join(' -> ')}`);
+            if (Array.isArray(plan.plan.remainingSteps)) {
+              console.log(`Remaining:   ${plan.plan.remainingSteps.join(' -> ')}`);
+            }
           }
           console.log(`Thought:     ${chalk.gray(plan.thought)}`);
           console.log(`Action:      ${chalk.bold.green(plan.actionType)}`);

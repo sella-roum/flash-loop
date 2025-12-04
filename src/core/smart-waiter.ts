@@ -32,37 +32,69 @@ export class SmartWaiter {
 
             // document.body がまだない場合は何もせず終了（ロード途中など）
             if (!document.body) {
-              resolve({ achieved: false, duration: 0 });
+              resolve({ achieved: false, duration: Date.now() - start });
               return;
             }
 
             let timer: number | undefined;
 
             // ノイズとなりうる要素（常に更新され続けるもの）を除外するためのチェック関数
-            const isNoisyMutation = (mutations: MutationRecord[]): boolean => {
+            const areAllMutationsNoisy = (mutations: MutationRecord[]): boolean => {
               return mutations.every((m) => {
                 const target = m.target as Element;
                 // ターゲットがない変更はノイズとして扱う (return true)
                 if (!target) return true;
 
-                // SVGアニメーション、動画、スピナーなどは無視
+                // 1. タグ名による除外 (メディア要素、SVG、Canvasなど)
                 const tagName = target.tagName ? target.tagName.toLowerCase() : '';
-                const classList = target.classList ? Array.from(target.classList).join(' ') : '';
+                if (['video', 'audio', 'svg', 'path', 'canvas'].includes(tagName)) return true;
 
-                return (
-                  tagName === 'video' ||
-                  tagName === 'svg' ||
-                  tagName === 'path' ||
-                  classList.includes('spinner') ||
-                  classList.includes('loader') ||
-                  classList.includes('progress')
-                );
+                // 2. クラス名による判定 (ローディングインジケータ系)
+                const classList = target.classList;
+                if (classList) {
+                  // 部分一致も含めて判定
+                  const classNameStr = classList.toString().toLowerCase();
+                  if (
+                    classNameStr.includes('spinner') ||
+                    classNameStr.includes('loader') ||
+                    classNameStr.includes('loading') ||
+                    classNameStr.includes('progress') ||
+                    classNameStr.includes('busy')
+                  ) {
+                    return true;
+                  }
+                }
+
+                // 3. IDによる判定
+                if (target.id) {
+                  const idStr = target.id.toLowerCase();
+                  if (
+                    idStr.includes('spinner') ||
+                    idStr.includes('loader') ||
+                    idStr.includes('loading') ||
+                    idStr.includes('progress')
+                  ) {
+                    return true;
+                  }
+                }
+
+                // 4. ARIA属性 / Data属性による判定
+                if (target.getAttribute) {
+                  if (
+                    target.getAttribute('aria-busy') === 'true' ||
+                    target.getAttribute('data-loading') !== null
+                  ) {
+                    return true;
+                  }
+                }
+
+                return false;
               });
             };
 
             const observer = new MutationObserver((mutations) => {
               // ノイズのみの変更であればタイマーをリセットしない
-              if (isNoisyMutation(mutations)) return;
+              if (areAllMutationsNoisy(mutations)) return;
 
               if (timer) clearTimeout(timer);
 
@@ -93,11 +125,22 @@ export class SmartWaiter {
         },
         { duration: stabilityDuration, timeout: maxTimeout }
       );
-    } catch (e) {
-      // 評価中にページ遷移が発生した場合などはエラーになるが、
-      // 待機失敗として処理を止めず、警告を出して進む
-      console.warn('[SmartWaiter] Wait logic interrupted (likely navigation):', e);
-      return { achieved: false, duration: 0 };
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+
+      // ページ遷移やコンテキスト破棄などの既知のエラーは警告を出して継続
+      if (
+        errorMessage.includes('Execution context was destroyed') ||
+        errorMessage.includes('Target closed') ||
+        errorMessage.includes('Navigation failed')
+      ) {
+        console.warn('[SmartWaiter] Wait interrupted by navigation or context destruction:', e);
+        return { achieved: false, duration: 0 };
+      }
+
+      // 予期せぬエラーは再スローして隠蔽しないようにする
+      console.error('[SmartWaiter] Unexpected error during wait:', e);
+      throw e;
     }
   }
 }

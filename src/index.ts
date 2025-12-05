@@ -16,10 +16,11 @@ const program = new Command();
 program
   .name('flash-loop')
   .description('AI-powered autonomous browser agent (Flash-Loop)')
-  .version('2.1.0')
+  .version('2.2.0')
   .argument('<goal>', 'The goal for the agent to achieve')
   .option('-u, --url <url>', 'Starting URL')
   .option('--headless', 'Run in headless mode', false)
+  .option('-i, --interactive', 'Run in interactive mode (Human-in-the-loop)', false)
   .option('--max-steps <number>', 'Maximum number of steps', (val) => {
     const parsed = parseInt(val, 10);
     if (isNaN(parsed) || parsed <= 0) {
@@ -40,21 +41,25 @@ program
     // CLI実行用のロガーを作成
     const logger = new SpinnerLogger();
     console.log(chalk.cyan('⚡ Starting Flash-Loop...'));
+    if (options.interactive) {
+      console.log(chalk.yellow('🛠️  Interactive Mode Enabled'));
+    }
 
     try {
       const agent = new FlashLoop({
         startUrl: options.url,
         headless: options.headless,
         maxSteps: options.maxSteps,
+        interactive: options.interactive,
         logger: logger,
       });
 
       const output = await agent.start(goal);
 
-      // 完了メッセージは FlashLoop 内でログ出力されるが、
-      // CLI終了として明示的に完了ステータスを表示
+      // 完了メッセージ
       if (output && output.trim().length > 0) {
         console.log(chalk.green('\n✨ Task Finished Successfully!'));
+        console.log(`Generated Test: ${output}`);
       }
     } catch (error) {
       console.error(chalk.red('Unexpected Error:'), error);

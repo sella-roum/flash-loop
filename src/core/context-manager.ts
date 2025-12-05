@@ -1,6 +1,7 @@
 /**
  * src/core/context-manager.ts
  * ブラウザコンテキスト、タブ(Page)、ダイアログを一元管理する
+ * 新規タブのオートフォーカス、履歴管理（スタック）、広告フィルタリング機能を含む
  */
 import { BrowserContext, Page, Dialog } from 'playwright';
 
@@ -8,6 +9,9 @@ export class ContextManager {
   private context: BrowserContext;
   private pages: Page[] = [];
   private activePage: Page | null = null;
+
+  // ページ遷移履歴スタック (LIFO) - タブを閉じたときの復帰用
+  private pageStack: Page[] = [];
 
   // ダイアログ管理用
   private pendingDialog: { message: string; type: string; dialog: Dialog } | null = null;
@@ -20,17 +24,46 @@ export class ContextManager {
   constructor(context: BrowserContext) {
     this.context = context;
     this.pages = context.pages();
-    this.activePage = this.pages[0] || null;
 
-    // 初期ページのリスナー設定
-    this.pages.forEach((p) => this.setupPageListeners(p));
+    // 初期ページの設定
+    if (this.pages.length > 0) {
+      this.activePage = this.pages[0];
+      this.pageStack.push(this.activePage);
+      this.pages.forEach((p) => this.setupPageListeners(p));
+    }
 
     // 新規ページの監視ハンドラ定義
-    this.onPageHandler = (page: Page) => {
-      console.log('✨ New tab detected');
+    this.onPageHandler = async (page: Page) => {
+      // 1. フィルタリング (簡易的な広告/トラッカー対策)
+      // URLが確定するまで少し待つ（about:blank回避のため）
+      await page.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {});
+
+      const url = page.url();
+      if (this.isIrrelevantUrl(url) && url !== 'about:blank') {
+        console.log(`🚫 Ignoring/Closing popup: ${url}`);
+        // 明らかな広告/トラッカーはスタックに載せず閉じる
+        await page.close().catch(() => {});
+        return;
+      }
+
+      console.log('✨ New tab detected. Auto-focusing...');
+
+      // ページリストに追加
       this.pages.push(page);
+
+      // イベントリスナー設定
       this.setupPageListeners(page);
-      this.activePage = page;
+
+      // 2. オートフォーカス
+      try {
+        await page.bringToFront();
+
+        // スタック管理更新
+        this.pageStack.push(page);
+        this.activePage = page;
+      } catch (e) {
+        console.error('Failed to switch to new tab:', e);
+      }
     };
 
     // イベント登録
@@ -48,15 +81,37 @@ export class ContextManager {
   }
 
   /**
+   * 除外すべきURLかどうかを判定
+   */
+  private isIrrelevantUrl(url: string): boolean {
+    return (
+      url.includes('googleads') || url.includes('doubleclick') || url.includes('facebook.com/tr')
+    );
+  }
+
+  /**
    * ページイベントのリスナーを設定
    */
   private setupPageListeners(page: Page) {
     // ページが閉じられたらリストから削除
     page.on('close', () => {
       this.pages = this.pages.filter((p) => p !== page);
+      this.pageStack = this.pageStack.filter((p) => p !== page);
+
       if (this.activePage === page) {
-        // アクティブページが閉じられたら、最後のページをアクティブに
-        this.activePage = this.pages[this.pages.length - 1] || null;
+        // 親（一つ前のタブ）に戻る
+        const parentPage = this.pageStack[this.pageStack.length - 1];
+        if (parentPage) {
+          console.log('↩️ Tab closed. Returning to previous tab.');
+          parentPage.bringToFront().catch(() => {});
+          this.activePage = parentPage;
+        } else if (this.pages.length > 0) {
+          // スタックが空ならリストの最後
+          this.activePage = this.pages[this.pages.length - 1];
+          this.activePage.bringToFront().catch(() => {});
+        } else {
+          this.activePage = null;
+        }
       }
     });
 
@@ -107,6 +162,7 @@ export class ContextManager {
       if (this.pages.length > 0) {
         this.activePage = this.pages[0];
       } else {
+        // ページがすべて閉じられた場合のガード
         throw new Error('No open pages found in context.');
       }
     }
@@ -127,7 +183,7 @@ export class ContextManager {
     let targetPage: Page | undefined;
 
     if (typeof target === 'number') {
-      // インデックスの範囲チェックを追加
+      // インデックスの範囲チェック
       if (target < 0 || target >= this.pages.length) {
         throw new Error(`Tab index ${target} is out of range (0-${this.pages.length - 1}).`);
       }
@@ -147,6 +203,9 @@ export class ContextManager {
     if (targetPage) {
       await targetPage.bringToFront();
       this.activePage = targetPage;
+      // スタックの最上位に移動（既存なら削除してpush）
+      this.pageStack = this.pageStack.filter((p) => p !== targetPage);
+      this.pageStack.push(targetPage);
     } else {
       throw new Error(`Tab not found matching: ${target}`);
     }

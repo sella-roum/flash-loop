@@ -10,7 +10,20 @@ import { HistoryManager } from './history';
 import { ContextManager } from './context-manager';
 import { IGenerator, FileGenerator, MemoryGenerator } from '../tools/generator';
 import { ILogger, SpinnerLogger, ConsoleLogger } from '../tools/logger';
-import { FlashLoopOptions } from '../types';
+import { FlashLoopOptions, ActionType, ActionTypeEnum, VALUE_REQUIRED_ACTIONS } from '../types';
+import chalk from 'chalk';
+
+// Inquirer (v13+) の型定義を動的インポートの型から抽出
+// ESM default export の型を取得する
+type InquirerModule = typeof import('inquirer');
+type InquirerInstance = InquirerModule['default'];
+
+// インタラクティブモードのオーバーライド用回答型
+interface OverrideAnswers {
+  actionType: ActionType;
+  targetId?: string;
+  value?: string;
+}
 
 export class FlashLoop {
   private browser: Browser | null = null;
@@ -60,6 +73,22 @@ export class FlashLoop {
     let step = 0;
     const MAX_STEPS = this.options.maxSteps || 20;
     let lastError: string | undefined = undefined;
+    let forceOverride = false; // 再試行不可能なエラー発生時の強制介入フラグ
+    let consecutiveForceOverrides = 0; // 連続して強制介入が発生した回数
+    const MAX_CONSECUTIVE_OVERRIDES = 3;
+
+    // Inquirer の動的インポート（インタラクティブモード用）
+    let inquirer: InquirerInstance | undefined;
+    if (this.options.interactive) {
+      try {
+        const imported = await import('inquirer');
+        inquirer = imported.default;
+      } catch (e) {
+        this.logger.fail('Inquirer not found. Interactive mode disabled.');
+        console.debug('Inquirer import error:', e);
+        this.options.interactive = false;
+      }
+    }
 
     while (step < MAX_STEPS) {
       step++;
@@ -81,9 +110,129 @@ export class FlashLoop {
         lastError
       );
 
-      if (plan.isFinished) break;
+      // インタラクティブモードでない場合のみ、ここで終了判定
+      if (plan.isFinished && !this.options.interactive) break;
 
       this.logger.action(plan.actionType, plan.targetId || 'page');
+
+      // --- Interactive Mode ---
+      if (this.options.interactive && inquirer) {
+        this.logger.stop(); // スピナー一時停止
+
+        // Keep-Alive: ユーザー入力待ちの間にセッションが切れないようにPing
+        // 間隔を60秒に緩和
+        const keepAlive = setInterval(() => {
+          activePage.evaluate('document.title').catch((err) => {
+            if (process.env.DEBUG) console.debug('Keep-alive ping failed:', err);
+          });
+        }, 60000);
+
+        try {
+          console.log(chalk.yellow(`\n🤖 AI Proposal:`));
+          if (plan.plan) {
+            console.log(`Plan Status: ${chalk.cyan(plan.plan.currentStatus)}`);
+            if (Array.isArray(plan.plan.remainingSteps)) {
+              console.log(`Remaining:   ${plan.plan.remainingSteps.join(' -> ')}`);
+            }
+          }
+          console.log(`Thought:     ${chalk.gray(plan.thought)}`);
+          console.log(`Action:      ${chalk.bold.green(plan.actionType)}`);
+          console.log(`Target:      ${plan.targetId || 'Page/Context'}`);
+          if (plan.value) console.log(`Value:       ${chalk.cyan(plan.value)}`);
+
+          if (forceOverride) {
+            console.log(
+              chalk.red.bold(
+                '\n⚠️  Previous error was not retryable. You must override the action or quit.'
+              )
+            );
+          }
+
+          // 基本選択肢
+          const choices = [
+            { name: '✅ Execute', value: 'execute' },
+            { name: '🛠️  Override (Edit Action)', value: 'override' },
+            { name: '⏭️  Skip', value: 'skip' },
+            { name: '🛑 Quit', value: 'quit' },
+          ];
+
+          // forceOverrideなら 'Execute' を選択肢から除外する
+          const filteredChoices = forceOverride
+            ? choices.filter((c) => c.value !== 'execute')
+            : choices;
+
+          // 選択肢のプロンプト
+          // ジェネリクスを指定して型安全に回答を取得
+          const answer = await inquirer.prompt<{ choice: string }>([
+            {
+              type: 'list',
+              name: 'choice',
+              message: forceOverride
+                ? 'Action Required (Non-retryable Error):'
+                : 'What would you like to do?',
+              choices: filteredChoices,
+            },
+          ]);
+
+          const choice = answer.choice;
+
+          if (choice === 'quit') break;
+          if (choice === 'skip') {
+            clearInterval(keepAlive);
+            // ユーザーがスキップを選択した場合、強制介入状態を解除して次のループへ進む
+            forceOverride = false;
+            continue;
+          }
+
+          // Overrideが選択された（または通常時にExecuteされた）場合はフラグをリセット
+          if (forceOverride) forceOverride = false;
+
+          if (choice === 'override') {
+            // オーバーライド用プロンプト
+            const override = await inquirer.prompt<OverrideAnswers>([
+              {
+                type: 'list',
+                name: 'actionType',
+                message: 'Action Type:',
+                // ActionTypeEnum.options を使用して動的に選択肢を生成 (Source of Truth)
+                choices: ActionTypeEnum.options,
+                default: plan.actionType,
+              },
+              {
+                type: 'input',
+                name: 'targetId',
+                message: 'Target ID (leave empty for page/context):',
+                default: plan.targetId,
+              },
+              {
+                type: 'input',
+                name: 'value',
+                message: 'Value (text, url, etc.):',
+                default: plan.value,
+                // 定数リストを使用して値を必要とするアクションかどうかを判定
+                when: (ans: Partial<OverrideAnswers>) =>
+                  ans.actionType !== undefined &&
+                  VALUE_REQUIRED_ACTIONS.includes(ans.actionType as ActionType),
+              },
+            ]);
+
+            plan.actionType = override.actionType;
+            plan.targetId = override.targetId || undefined;
+            plan.value = override.value;
+            // ユーザーが介入して操作を変更したため、終了フラグを解除して継続する
+            plan.isFinished = false;
+          }
+        } finally {
+          clearInterval(keepAlive);
+        }
+
+        // ここでの break は削除し、Executor の実行後に移動しました。
+        // これにより、finishアクションのコード生成を確実に行いつつ、
+        // ユーザーのOverrideによる継続を可能にします。
+
+        this.logger.start('Executing...');
+      }
+      // -------------------------
 
       // 3. Execute (Locator-First)
       const result = await this.executor.execute(plan, this.contextManager, elementMap);
@@ -92,6 +241,8 @@ export class FlashLoop {
         this.logger.success(`Success: ${plan.thought}`);
         this.history.add(`SUCCESS: ${plan.actionType}`);
         lastError = undefined;
+        forceOverride = false; // 成功したのでフラグは確実にリセット
+        consecutiveForceOverrides = 0; // 連続エラーカウントもリセット
 
         if (result.generatedCode) {
           await this.generator.appendCode(result.generatedCode, plan.thought);
@@ -102,14 +253,39 @@ export class FlashLoop {
         lastError = result.userGuidance || result.error;
 
         if (!result.retryable) {
-          break;
+          if (this.options.interactive) {
+            consecutiveForceOverrides++;
+            if (consecutiveForceOverrides >= MAX_CONSECUTIVE_OVERRIDES) {
+              console.log(
+                chalk.red.bold('\n⛔ Too many consecutive non-retryable errors. Terminating.')
+              );
+              break;
+            }
+
+            console.log(
+              chalk.red(
+                '\n❌ Non-retryable error occurred. Next step will require manual override.'
+              )
+            );
+            forceOverride = true; // 次のイテレーションで介入を強制
+            // breakせずにループ継続 -> Brainが再考 -> InteractiveでOverride強制というフローになる
+          } else {
+            break;
+          }
+        } else {
+          // Retryableなエラーの場合はカウントをリセット
+          consecutiveForceOverrides = 0;
         }
+      }
+
+      // インタラクティブモードでの完了判定、またはAIが完了を決定しExecutorが成功した場合の終了判定
+      // 注意: インタラクティブモードでユーザーがOverrideして isFinished = false にした場合は、ここは通りません。
+      if (plan.actionType === 'finish' || plan.isFinished) {
+        break;
       }
     }
 
     await this.generator.finish();
-    // ブラウザのクローズは cleanup() に委譲するか、ここで行う
-    // CLIモードの自動終了のためここでも呼ぶ
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
@@ -120,7 +296,6 @@ export class FlashLoop {
 
   /**
    * リソースのクリーンアップを行う
-   * Libraryモードなどで外部から明示的に呼ばれる場合がある
    */
   async cleanup(): Promise<void> {
     if (this.browser) {
@@ -131,6 +306,5 @@ export class FlashLoop {
       }
       this.browser = null;
     }
-    // 将来的にイベントリスナーの解除などが必要になればここに追記
   }
 }

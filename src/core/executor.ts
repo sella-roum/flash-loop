@@ -137,7 +137,8 @@ page.once('dialog', dialog => dialog.${action}());`,
       await this.performLocatorAction(locator, plan, page, auxLocator);
 
       // 3. Stabilization
-      await this.waitForStabilization(page);
+      // Observer.captureState 側で SmartWaiter を呼んでいるため、ここでの待機は削除
+      // レイテンシを削減し、二重待機を防ぐ
 
       return {
         success: true,
@@ -266,7 +267,6 @@ page.once('dialog', dialog => dialog.${action}());`,
         await locator.uncheck();
         break;
       case 'upload':
-        // 修正: カンマ区切りで複数ファイル対応
         {
           const files = val.includes(',') ? val.split(',').map((f) => f.trim()) : val;
           await locator.setInputFiles(files);
@@ -294,7 +294,6 @@ page.once('dialog', dialog => dialog.${action}());`,
         await expect(locator).toHaveValue(val);
         break;
       case 'assert_url':
-        // シンプルなURLチェックに変更（過剰なRegExpエスケープを回避）
         await expect(page).toHaveURL(val);
         break;
 
@@ -351,12 +350,9 @@ page.once('dialog', dialog => dialog.${action}());`,
       case 'upload': {
         const rawVal = plan.value || '';
         if (rawVal.includes(',')) {
-          // 'file1.png', 'file2.png' -> "'file1.png', 'file2.png'"
-          // 配列リテラルとしてコード生成
           const files = rawVal.split(',').map((f) => `'${f.trim().replace(/'/g, "\\'")}'`);
           return `await ${selectorCode}.setInputFiles([${files.join(', ')}]);`;
         }
-        // 単一ファイル
         return `await ${selectorCode}.setInputFiles(${val});`;
       }
 
@@ -385,19 +381,7 @@ page.once('dialog', dialog => dialog.${action}());`,
         return `await ${selectorCode}.scrollIntoViewIfNeeded();`;
 
       default:
-        // 引数があるかわからないため、安全策としてvalを入れているが、
-        // 上記で主要なアクションはカバーされているはず
         return `await ${selectorCode}.${plan.actionType}(${val});`;
-    }
-  }
-
-  private async waitForStabilization(page: Page) {
-    try {
-      await page.waitForLoadState('domcontentloaded');
-      // SPA対応: 短い networkidle も待機
-      await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => {});
-    } catch {
-      // ignore error (timeout etc)
     }
   }
 }

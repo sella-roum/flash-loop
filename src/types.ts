@@ -16,6 +16,8 @@ export interface FlashLoopOptions {
   // ライブラリ利用時のオプション
   page?: Page; // 既存のPageインスタンス
   logger?: ILogger; // 外部から注入するロガー
+  // インタラクティブモード（人間が介入するモード）
+  interactive?: boolean;
 }
 
 // --- Action Definitions ---
@@ -49,12 +51,12 @@ export const ActionTypeEnum = z.enum([
   'reload',
   'go_back',
   'scroll',
-  'switch_tab', // [New] タブ切り替え
-  'close_tab', // [New] タブを閉じる
+  'switch_tab',
+  'close_tab',
 
   // --- Wait & Dialog ---
-  'wait_for_element', // [New] 特定の要素が出現するのを待つ
-  'handle_dialog', // [New] アラートや確認ダイアログの処理
+  'wait_for_element',
+  'handle_dialog',
 
   // --- Assertion (Verification) ---
   'assert_visible',
@@ -69,12 +71,42 @@ export const ActionTypeEnum = z.enum([
 export type ActionType = z.infer<typeof ActionTypeEnum>;
 
 /**
+ * 値(value)の入力を必須とするアクションタイプのリスト
+ * インタラクティブモードのOverrideプロンプト等で使用
+ */
+export const VALUE_REQUIRED_ACTIONS: ActionType[] = [
+  'fill',
+  'type',
+  'navigate',
+  'scroll',
+  'switch_tab',
+  'keypress',
+  'select_option',
+  'upload',
+  'assert_text',
+  'assert_value',
+  'assert_url',
+  'handle_dialog',
+];
+
+/**
  * LLMが生成するアクションプラン
  */
 export const ActionSchema = z.object({
   thought: z
     .string()
     .describe('現在の状況分析、なぜこのアクションを選択したかの思考プロセス。簡潔に記述すること。'),
+
+  // 適応型プランニング
+  plan: z
+    .object({
+      currentStatus: z.string().describe('現在の進捗状況を一言で (例: "Login form detected")'),
+      remainingSteps: z
+        .array(z.string())
+        .describe('ゴールまでの残りの主要ステップ (最大3つ程度)。状況が変われば修正すること。'),
+      isPlanChanged: z.boolean().describe('予期せぬ画面遷移などで、当初の計画を変更した場合はtrue'),
+    })
+    .describe('現状認識と今後の見通し。常に最新の状況に合わせて更新すること。'),
 
   actionType: ActionTypeEnum.describe('実行するPlaywrightアクションの種類'),
 
@@ -118,7 +150,6 @@ export interface SelectorCandidates {
   placeholder?: string;
   text?: string;
   label?: string;
-  // 属性ベースのセレクタなどを追加
   altText?: string;
   title?: string;
 }

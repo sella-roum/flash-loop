@@ -175,7 +175,8 @@ export class FlashLoop {
           if (choice === 'quit') break;
           if (choice === 'skip') {
             clearInterval(keepAlive);
-            // Skipの場合はフラグを維持する（AIが同じ過ちを犯したときのために強制状態を解かない）
+            // ユーザーがスキップを選択した場合、強制介入状態を解除して次のループへ進む
+            forceOverride = false;
             continue;
           }
 
@@ -213,6 +214,8 @@ export class FlashLoop {
             plan.actionType = override.actionType;
             plan.targetId = override.targetId || undefined;
             plan.value = override.value;
+            // ユーザーが介入して操作を変更したため、終了フラグを解除して継続する
+            plan.isFinished = false;
           }
         } finally {
           clearInterval(keepAlive);

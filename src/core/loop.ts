@@ -74,6 +74,8 @@ export class FlashLoop {
     const MAX_STEPS = this.options.maxSteps || 20;
     let lastError: string | undefined = undefined;
     let forceOverride = false; // 再試行不可能なエラー発生時の強制介入フラグ
+    let consecutiveForceOverrides = 0; // 連続して強制介入が発生した回数
+    const MAX_CONSECUTIVE_OVERRIDES = 3;
 
     // Inquirer の動的インポート（インタラクティブモード用）
     let inquirer: InquirerInstance | undefined;
@@ -120,7 +122,9 @@ export class FlashLoop {
         // Keep-Alive: ユーザー入力待ちの間にセッションが切れないようにPing
         // 間隔を60秒に緩和
         const keepAlive = setInterval(() => {
-          activePage.evaluate('document.title').catch(() => {});
+          activePage.evaluate('document.title').catch((err) => {
+            if (process.env.DEBUG) console.debug('Keep-alive ping failed:', err);
+          });
         }, 60000);
 
         try {
@@ -207,7 +211,8 @@ export class FlashLoop {
                 default: plan.value,
                 // 定数リストを使用して値を必要とするアクションかどうかを判定
                 when: (ans: Partial<OverrideAnswers>) =>
-                  ans.actionType !== undefined && VALUE_REQUIRED_ACTIONS.includes(ans.actionType),
+                  ans.actionType !== undefined &&
+                  VALUE_REQUIRED_ACTIONS.includes(ans.actionType as ActionType),
               },
             ]);
 
@@ -221,8 +226,9 @@ export class FlashLoop {
           clearInterval(keepAlive);
         }
 
-        // ユーザーがfinishを選択、または既にプランが完了している場合
-        if (plan.actionType === 'finish' || plan.isFinished) break;
+        // ここでの break は削除し、Executor の実行後に移動しました。
+        // これにより、finishアクションのコード生成を確実に行いつつ、
+        // ユーザーのOverrideによる継続を可能にします。
 
         this.logger.start('Executing...');
       }
@@ -236,6 +242,7 @@ export class FlashLoop {
         this.history.add(`SUCCESS: ${plan.actionType}`);
         lastError = undefined;
         forceOverride = false; // 成功したのでフラグは確実にリセット
+        consecutiveForceOverrides = 0; // 連続エラーカウントもリセット
 
         if (result.generatedCode) {
           await this.generator.appendCode(result.generatedCode, plan.thought);
@@ -247,6 +254,14 @@ export class FlashLoop {
 
         if (!result.retryable) {
           if (this.options.interactive) {
+            consecutiveForceOverrides++;
+            if (consecutiveForceOverrides >= MAX_CONSECUTIVE_OVERRIDES) {
+              console.log(
+                chalk.red.bold('\n⛔ Too many consecutive non-retryable errors. Terminating.')
+              );
+              break;
+            }
+
             console.log(
               chalk.red(
                 '\n❌ Non-retryable error occurred. Next step will require manual override.'
@@ -257,7 +272,16 @@ export class FlashLoop {
           } else {
             break;
           }
+        } else {
+          // Retryableなエラーの場合はカウントをリセット
+          consecutiveForceOverrides = 0;
         }
+      }
+
+      // インタラクティブモードでの完了判定、またはAIが完了を決定しExecutorが成功した場合の終了判定
+      // 注意: インタラクティブモードでユーザーがOverrideして isFinished = false にした場合は、ここは通りません。
+      if (plan.actionType === 'finish' || plan.isFinished) {
+        break;
       }
     }
 
